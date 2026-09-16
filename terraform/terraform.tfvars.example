@@ -1,0 +1,68 @@
+# 复制为 terraform.tfvars 后填写；或直接 `make setup` 自动生成——
+# public_key / operator_cidr 会自动填，本文件里只需再确认 oss_bucket
+
+region  = "cn-hangzhou"
+zone_id = "cn-hangzhou-i"
+
+project = "esbench"
+env     = "perf"
+owner   = "perf-team"
+
+# SSH 放行网段，务必收紧为你的真实出口 IP
+operator_cidr = "203.0.113.10/32"
+
+# SSH 公钥内容（推荐）；留空则改用 instance_password
+public_key = "ssh-rsa AAAA..."
+
+# ---------- 档位（机型与镜像的配套组合，由档位自动选镜像） ----------
+# x86-cheap  x86 8C32G  <- 先用它跑通流程
+# x86-main   x86 16C64G <- 主力档
+# arm-cheap  ARM 8C32G
+# arm-main   ARM 16C64G
+profile = "x86-cheap"
+
+# rally 客户端架构，独立于 ES：arm（默认，比同规格 x86 便宜约 23.5%，不影响服务端测量）
+# 若实测 ARM 单核在服务端进入平台期前就吃满，改回 "x86"
+rally_arch = "arm"
+
+es_node_count = 2
+
+# 想临时试别的机型可覆盖（留空则用档位默认）
+es_instance_type_override    = ""
+rally_instance_type_override = ""
+
+# ---------- 镜像（按架构各存一份，档位自动选取） ----------
+# 先用 make image-all PROFILE=x86-cheap 构建，把输出 ID 填到这里
+es_image_id_x86    = ""
+es_image_id_arm    = ""
+rally_image_id_x86 = ""
+rally_image_id_arm = ""
+
+# ---------- 引擎 ----------
+engine      = "elasticsearch"   # elasticsearch | easysearch
+engine_home = "/opt/es"
+es_heap_gb  = 16                # 与 geonames 基线一致
+es_data_dir = "/data/es"
+cluster_name = "esbench"
+es_http_port = 9200
+
+# ---------- 存储 ----------
+es_data_disk_size = 500
+es_data_disk_pl   = "PL1"       # 350MB/s 稳定，不触发突发回落
+rally_data_disk_size = 200
+rally_data_disk_pl   = "PL1"
+
+# ---------- 产物归档 ----------
+oss_bucket = "my-esbench-results"
+oss_prefix = "esrally-results"
+ram_role_name = ""              # 建议配 RAM 角色免 AK 写 OSS
+
+# ---------- 计费 ----------
+use_spot          = false       # 正式出报告的轮次保持 false
+assign_public_ip  = true        # false 时需经堡垒机访问
+
+# 引擎 admin 密码（镜像构建与开机健康检查共用；Makefile 会按 ENGINE 自动选，
+# 手动 apply 时需自行与所选引擎匹配）
+#   elasticsearch  -> Qwer@123
+#   easysearch     -> Qwer@1234（其密码策略要求 >=9 位，Qwer@123 会被拒）
+es_password = "Qwer@123"

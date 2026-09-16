@@ -1,0 +1,26 @@
+# 本地状态 / 构建产物
+.DS_Store
+.build-image-*/
+results/
+image-ids.txt
+__pycache__/
+scripts/.tf-cli.generated.hcl
+.tf-cli.generated.hcl
+
+# 凭据类文件：RAM 用户 AccessKey 的 CSV（含 Secret 与控制台密码）等，绝不入库
+*.csv
+
+# terraform：provider 插件与 state（state 里可能含实例信息，绝不入库）
+.terraform/
+*.tfstate
+*.tfstate.backup
+# 真实参数（含出口 IP / 公钥）只留本地，仓库只保留 terraform.tfvars.example
+terraform.tfvars
+
+# terraform 官方二进制（brew 或官网下载，见 README 第 1.1 节）
+bin/
+
+# 语料大文件：由 `make corpus` 重新生成（track 定义 corpus/geonames/ 保留入库）
+corpus/geonames-data/
+corpus/geonames-corpus.tar.gz
+corpus/geonames-corpus.tar.gz.sha256
