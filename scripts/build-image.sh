@@ -99,7 +99,10 @@ if [ -f "$TFV" ]; then
 fi
 
 SUFFIX="$(date +%m%d%H%M%S)"
-BUILD_DIR="$ROOT/.build-image-$ROLE-$ARCH"
+# 构建工作区必须带唯一后缀：它既是下面 rm -rf 的对象，也各自持有一份独立 state。
+# 不带后缀时，两个并行的 make image-es / image-rally（或 FORCE=1 重跑）会互相删掉
+# 对方的目录、并共用同一份 terraform state —— 报出来的错完全看不懂（曾经踩过）。
+BUILD_DIR="$ROOT/.build-image-$ROLE-$ARCH-$SUFFIX"
 # 确定性镜像名：唯一对应「角色+引擎/esrally+版本+架构」组合，不带时间戳——
 # 这让构建前按名字查重成为可能（见下）；FORCE=1 重建时补时间戳后缀防撞名。
 # 命名规则统一在 scripts/image-name.sh（compose_image_name），
@@ -252,6 +255,10 @@ public_key       = "$(cat "$PUBKEY_FILE")"
 EOF
 
 cd "$BUILD_DIR"
+# 构建环境有自己的独立 state，不该继承主配置的 provider 缓存路径：
+# Makefile 会 export TF_DATA_DIR（按 stack 隔离主环境用），继承下来会让并发的
+# 镜像构建共享同一个 provider 目录，也可能在别人删 stack 时被一起清掉。
+unset TF_DATA_DIR
 
 echo "  terraform init..."
 terraform init > /dev/null 2>&1 || terraform init
@@ -343,7 +350,10 @@ cd - > /dev/null
   echo "${ROLE}_image_id_${ARCH} = \"$NEW_IMAGE\""
 } >> "$ROOT/image-ids.txt"
 
-# 结构化台账：TSV（日期/角色/架构/引擎/版本/镜像ID/镜像名），供 make image-ls / image-use 使用
+# 结构化台账：TSV（日期/角色/架构/引擎/版本/镜像ID/镜像名），供 make image-ls / image-use 使用。
+# 这里刻意不加锁：以 O_APPEND 追加单条短行（远小于 PIPE_BUF）是原子写，
+# 并发构建最多让两行的顺序互换，不会写出半行。真正需要原子性的是
+# image.sh fix-names 的「读-改-写」，那一处已改成临时文件 + 原子 mv。
 if [ "$ROLE" = "es" ]; then
   ENGINE_LABEL="$ENGINE"
   VERSION_LABEL="${VERSION:--}"

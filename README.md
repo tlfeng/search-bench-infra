@@ -70,7 +70,7 @@ make corpus        # 产出 corpus/geonames-corpus.tar.gz 与 .sha256
 ### 1.5 构建镜像（一次性）
 
 ```bash
-make image-rally WITH_CORPUS=1     # rally 客户端镜像；WITH_CORPUS=1 必须有，否则运行期拉不到语料
+make image-rally PROFILE=arm-cheap WITH_CORPUS=1   # rally 客户端镜像；WITH_CORPUS=1 必须有，否则运行期拉不到语料
 make image-es PROFILE=arm-debug    # ES 镜像：PROFILE 只决定架构，x86 侧换 PROFILE=x86-main 再建一张
 ```
 
@@ -89,7 +89,15 @@ make fetch                           # 取产物到 results/
 make down                            # 销毁全部资源
 ```
 
-`make fetch` 默认从 OSS 拉，**实例销毁后照样能取**；本机没装 `ossutil64` 时自动改用 scp，那时实例必须还在——所以 fetch 要放在 down 之前。想强制走 scp：`make fetch FROM=instance`。
+也可以一条命令跑完上面四步（`make run`，内部严格按 up → bench → fetch → down 执行，bench 失败也会 fetch、任何失败也会 down）：
+
+```bash
+make run PROFILE=arm-debug TEST_MODE=1   # DRY=1 只出计划（0 费用）；KEEP=1 保留实例排查
+```
+
+`make up` 成功后会把本轮 PROFILE/ENGINE 记到 `.stacks/<STACK>/meta`；之后 `make bench` / `make status` / `make run` 不显式传参时自动沿用，避免「up 用 arm-debug、bench 按默认档推导」造成的 arch 标签错标与就绪门禁退化。显式传参永远优先。
+
+`make fetch` 默认从 OSS 拉，**实例销毁后照样能取**；本机没装 `ossutil64` 时自动改用 scp，那时实例必须还在——所以 fetch 要放在 down 之前（`make run` 已把这层顺序固化，手工跑四步时才需要自己记）。想强制走 scp：`make fetch FROM=instance`。
 
 ### 1.7 首次跑通：验证阶梯
 
@@ -99,7 +107,7 @@ make down                            # 销毁全部资源
 |---|---|---|---|
 | 0 静态检查 | `make help`；`make -n up PROFILE=arm-debug` | 0 | 命令展开与传参 |
 | 1 语料 | `make corpus` | 0 | 语料可获取 |
-| 2 镜像 | `make image-rally WITH_CORPUS=1`<br>`make image-es PROFILE=arm-debug` | 各 ~0.2 元 | 网络依赖、语料烘焙与 sha256 校验 |
+| 2 镜像 | `make image-rally PROFILE=arm-cheap WITH_CORPUS=1`<br>`make image-es PROFILE=arm-debug` | 各 ~0.2 元 | 网络依赖、语料烘焙与 sha256 校验 |
 | 3 起最小环境 | `make up PROFILE=arm-debug`；`make status`；`make tail-rally` | 约 1.1 元/时（竞价 0.5） | ECS 创建、userdata、引擎健康 |
 | 4 秒级一场 | `make bench PROFILE=arm-debug TEST_MODE=1`；`make fetch` | 同上 | 全链路连通：报告生成 + 归档 |
 | 5 双节点 | `make down` 后 `make up PROFILE=x86-cheap`，再 `curl -u admin:<默认口令见第 4 节> localhost:9200/_cluster/health?pretty` | 约 5.8 元/时（竞价 1.8） | **必须看到 `number_of_nodes: 2`**——单节点集群也报 green，只看 green 会漏判集群发现问题 |
@@ -124,51 +132,53 @@ make down                            # 销毁全部资源
 
 机型与镜像是自动配套的——换档位会挑对应架构的镜像，不会出现 ARM 机型配 x86 镜像这种必然失败。debug 两档是单节点 + 40G ESSD：单节点砍掉集群发现这个变量，小盘把存储成本压到可忽略。
 
-rally 固定用 ARM：它只发 HTTP 请求、计算都在服务端，架构不影响测量结果，而同规格 ARM 比 x86 便宜约 23.5%。唯一前提是单核压得满服务端——起压后用 `pidstat -p $(pgrep -f esrally) 1` 看，若服务端还没进平台期、rally 的 %CPU 就逼近 100，说明客户端先饱和，`make up RALLY_ON=x86` 切回。
+rally 固定用 ARM：它只发 HTTP 请求、计算都在服务端，架构不影响测量结果，而同规格 ARM 的算力比 x86 便宜约 23.5%（按 2.2 的含盘单价算是 17%~22%）。唯一前提是单核压得满服务端——起压后用 `pidstat -p $(pgrep -f esrally) 1` 看，若服务端还没进平台期、rally 的 %CPU 就逼近 100，说明客户端先饱和，`make up RALLY_ON=x86` 切回。
 
 ### 2.2 成本
 
-单价（含该机的 40G 系统盘与数据盘，2026-09 在 `cn-hangzhou` 实测）：
+**ES 节点单价**（含该机的 40G 系统盘与数据盘，2026-09 在 `cn-hangzhou` 实测）：
 
-| 角色 | 机型 | 数据盘 | 按量/时 | 竞价/时 |
+| ES 机型 | 实例类型 | 数据盘 | 按量/时 | 竞价/时 |
 |---|---|---|---|---|
-| ES／rally | x86 2C8G `ecs.g8i.large` | 40G | 0.69 | 0.27 |
-| ES／rally | ARM 2C8G `ecs.g8y.large` | 40G | 0.57 | 0.26 |
-| ES | x86 8C32G `ecs.g8i.2xlarge` | 100G | 2.39 | 0.71 |
-| ES | ARM 8C32G `ecs.g8y.2xlarge` | 100G | 1.89 | 0.63 |
-| ES | x86 16C64G `ecs.g8i.4xlarge` | 100G | 4.48 | 1.13 |
-| ES | ARM 16C64G `ecs.g8y.4xlarge` | 100G | 3.49 | 0.97 |
-| rally | ARM 4C16G `ecs.g8y.xlarge` | 40G | 0.97 | 0.34 |
-| rally | ARM 8C32G `ecs.g8y.2xlarge` | 40G | 1.77 | 0.50 |
+| x86 2C8G | `ecs.g8i.large` | 40G | 0.69 | 0.27 |
+| ARM 2C8G | `ecs.g8y.large` | 40G | 0.57 | 0.26 |
+| x86 8C32G | `ecs.g8i.2xlarge` | 100G | 2.39 | 0.71 |
+| ARM 8C32G | `ecs.g8y.2xlarge` | 100G | 1.89 | 0.63 |
+| x86 16C64G | `ecs.g8i.4xlarge` | 100G | 4.48 | 1.13 |
+| ARM 16C64G | `ecs.g8y.4xlarge` | 100G | 3.49 | 0.97 |
 
-单轮价格 = **(节点数 × ES 单价 + rally 单价) × 轮次小时数**，轮次按 **2 小时计**（含开机、一次压测、取产物与销毁的余量）。
+**每轮 = n 台 ES + 1 台 rally**。下面的矩阵按 ES 机型分行、按 **ES 节点数**分列，**每格都已含那 1 台 rally 及其磁盘**：
 
-**单轮价格（按量，元）**：
+```
+单轮价格 = (ES 节点数 × ES 单价 + rally 单价) × 轮次小时数   # 轮次按 2 小时计
+```
 
-| ES 机型 | 1 节点 | 2 节点 | 3 节点 | 4 节点 |
+rally 每轮固定 1 台、固定 ARM，按 ES 规格配对：
+
+| ES 机型 | rally 机型 | rally 单价（按量/竞价） |
+|---|---|---|
+| x86 2C8G（`debug` 档） | 同规格 x86 2C8G | 0.69 / 0.27 |
+| ARM 2C8G（`arm-debug` 档） | 同规格 ARM 2C8G | 0.57 / 0.26 |
+| x86 8C32G / ARM 8C32G | ARM 4C16G `ecs.g8y.xlarge` | 0.97 / 0.34 |
+| x86 16C64G / ARM 16C64G | ARM 8C32G `ecs.g8y.2xlarge` | 1.77 / 0.50 |
+
+轮次按 **2 小时**计（含开机、一次压测、取产物与销毁的余量）。例：x86 16C64G 三节点 = 3 × 4.48 + 1.77 = 15.21 元/时 → 一轮 30.4 元。
+
+**单轮价格（元，每格 = 按量 / 竞价，四舍五入到 0.1 元）**：
+
+| ES 机型 | ES ×1 | ES ×2 | ES ×3 | ES ×4 |
 |---|---|---|---|---|
-| x86 2C8G | 2.8 | 4.1 | 5.5 | 6.9 |
-| ARM 2C8G | 2.3 | 3.4 | 4.5 | 5.7 |
-| x86 8C32G | 6.7 | 11.5 | 16.3 | 21.0 |
-| ARM 8C32G | 5.7 | 9.5 | 13.3 | 17.1 |
-| x86 16C64G | 12.5 | 21.5 | 30.4 | 39.4 |
-| ARM 16C64G | 10.5 | 17.5 | 24.5 | 31.5 |
-
-**单轮价格（竞价，元）**：
-
-| ES 机型 | 1 节点 | 2 节点 | 3 节点 | 4 节点 |
-|---|---|---|---|---|
-| x86 2C8G | 1.1 | 1.6 | 2.2 | 2.7 |
-| ARM 2C8G | 1.0 | 1.5 | 2.0 | 2.6 |
-| x86 8C32G | 2.1 | 3.5 | 5.0 | 6.4 |
-| ARM 8C32G | 1.9 | 3.2 | 4.5 | 5.7 |
-| x86 16C64G | 3.3 | 5.5 | 7.8 | 10.1 |
-| ARM 16C64G | 2.9 | 4.9 | 6.8 | 8.7 |
+| x86 2C8G | 2.8 / 1.1 | 4.1 / 1.6 | 5.5 / 2.2 | 6.9 / 2.7 |
+| ARM 2C8G | 2.3 / 1.0 | 3.4 / 1.6 | 4.6 / 2.1 | 5.7 / 2.6 |
+| x86 8C32G | 6.7 / 2.1 | 11.5 / 3.5 | 16.3 / 4.9 | 21.1 / 6.4 |
+| ARM 8C32G | 5.7 / 1.9 | 9.5 / 3.2 | 13.3 / 4.5 | 17.1 / 5.7 |
+| x86 16C64G | 12.5 / 3.3 | 21.5 / 5.5 | 30.4 / 7.8 | 39.4 / 10.0 |
+| ARM 16C64G | 10.5 / 2.9 | 17.5 / 4.9 | 24.5 / 6.8 | 31.5 / 8.8 |
 
 读表前先知道三件事：
 
-- **单价已含全部磁盘**，不用另加。ESSD PL1 云盘 0.0021 元/GiB/时，系统盘与数据盘同价；磁盘在单价里的占比随规格下降（2C8G 档约 24%，16C64G 档约 7%）。
-- **竞价只对算力打折**，磁盘按原价计，所以整套的竞价/按量比在 0.25~0.40 之间浮动，不是固定折扣。切换方式见 2.4。
+- **单价已含全部磁盘**，不用另加。ESSD PL1 云盘按量 0.0021 元/GiB/时，系统盘与数据盘同价；磁盘在单价里的占比随规格下降（2C8G 档约 24%~29%，16C64G 档约 7%）。
+- **竞价只对算力打折**，磁盘按原价计，所以整套的竞价/按量比在 0.25~0.46 之间浮动（debug 档盘占比最高，比值也最高），不是固定折扣。切换方式见 2.4。
 - 出网流量 0.8 元/GB，且**只对出方向收费**；压测以入方向（下载语料、提交请求）为主，入方向免费，量级远小于主机。
 
 一轮要跑多个 track、或加重复次数取中位数时，用上面的每小时单价乘实际机时即可。想缩短单轮，可以用不跑查询的 `append-no-conflicts-index-only`（track 自带，用法 `make bench CHALLENGE=append-no-conflicts-index-only`）——省掉全部查询任务后，轮次时长主要就剩写入与 force-merge。
@@ -197,12 +207,15 @@ rally 固定用 ARM：它只发 HTTP 请求、计算都在服务端，架构不�
 | `make local-validate` | Docker 里验证 install.sh（见 3.6，0 云费用） |
 | `make image-es` / `make image-rally` / `make image-all` | 构建镜像（见 1.5） |
 | `make image-ls` / `make image-use` | 镜像台账 / 切换 tfvars 指向（见 2.7） |
-| `make up [PROFILE=…] [RALLY_ON=…] [ES_NODES=…] [USE_SPOT=1]` | 拉起环境 |
-| `make status` | IP、target-hosts、当前档位与计费方式（`billing`） |
-| `make bench [TRACK=…] [CHALLENGE=…] [CLIENTS=…] [ENGINE_NAME=es\|ez] [TEST_MODE=1]` | 跑压测 |
-| `make fetch [RUN_ID=…] [FROM=instance]` | 取回产物到 `results/` |
-| `make down` | 销毁全部资源 |
+| `make up [PROFILE=…] [ENGINE=…] [RALLY_ON=…] [ES_NODES=…] [USE_SPOT=1] [STACK=…] [ZONE=…]` | 拉起环境；成功后把 PROFILE/ENGINE 记入 `.stacks/<STACK>/meta` |
+| `make status` | IP、target-hosts、当前档位与计费方式（`billing`），含 up 记录与不一致告警 |
+| `make bench [TRACK=…] [CHALLENGE=…] [CLIENTS=…] [ENGINE_NAME=es\|ez] [TEST_MODE=1] [STACK=…]` | 跑压测；PROFILE/ENGINE 缺省回读 up 记录 |
+| `make run [PROFILE=…] [ENGINE=…] [CLIENTS=…] [TEST_MODE=1] [KEEP=1] [DRY=1]` | 一条命令跑完 up→bench→fetch→down（串行纪律的自动化形态） |
+| `make fetch [RUN_ID=…] [FROM=instance] [STACK=…]` | 取回产物到 `results/[<stack>/]` |
+| `make down [STACK=…] [CONFIRM=1]` | 销毁资源（非 default stack 需 `CONFIRM=1`） |
 | `make ssh-rally` / `ssh-es1` / `ssh-es2` / `tail-rally` | 登录机器 / 看 rally 初始化日志 |
+| `make stacks` | 列出所有 stack：本地 workspace/产物 + **云端仍在计费的实例**（见 2.8） |
+| `make matrix [MATRIX=…]` | 按 `stacks.yaml` 并行跑多套并汇总对照表（见 2.8） |
 | `make balance` | 账户余额与当月消耗（需 BSS 只读授权） |
 
 bench 的两个坑（geonames track 专属）：
@@ -240,7 +253,7 @@ bench 的两个坑（geonames track 专属）：
 | 3 | ARM | elasticsearch | `arch=arm,engine=es` |
 | 4 | ARM | easysearch | `arch=arm,engine=ez` |
 
-每轮固定四步：`make up PROFILE=<x86-main|arm-main>` → `make bench TRACK=geonames CLIENTS=8 ENGINE_NAME=<es|ez>` → `make fetch` → `make down`。
+每轮固定四步：`make up PROFILE=<x86-main|arm-main>` → `make bench TRACK=geonames CLIENTS=8 ENGINE_NAME=<es|ez>` → `make fetch` → `make down`。这四步已封装成一条 `make run PROFILE=<x86-main|arm-main> ENGINE=<es|ez> CLIENTS=8`：内部按同样顺序执行，且 bench 失败也会 fetch、任何失败也会 down，把「忘 fetch 就 down」这类事故从纪律变成代码保证。
 
 四条纪律：
 
@@ -250,6 +263,9 @@ bench 的两个坑（geonames track 专属）：
 4. 正式出数据的轮次用按量，竞价只用于调试。
 
 单轮价格与节点数对比见 2.2；省钱手段的优先级是 **串行开机 > 竞价 > 降规格**，其中降规格不推荐——内存减半后 page cache 缩到 16G，HNSW 2M 数据集有风险。
+
+> **串行不是强制约束，而是一个默认选择。** 上面的四轮矩阵有一个方法论缺陷：第 1 轮与第 4 轮之间可能隔了几个小时，期间的宿主机负载与存储后端压力都会变，最后分不清差异来自引擎还是来自时段。
+> 需要消掉这个漂移时改用 **2.8 的 `STACK` + `make matrix`**：两套环境在同一个时间窗内并行跑，用**同时段的相对比值**代替跨时段的绝对值比较。这**不额外花钱**（同样的轮数就是同样的总机时，只是压缩了时间轴，见 2.8 的成本口径），代价是同时占用更多配额、且必须错开可用区。
 
 ### 2.6 换引擎 / 换架构
 
@@ -275,25 +291,107 @@ make image-fix-names                         # 存量镜像名补版本（名字
 
 `image-use` 把「镜像 ID + engine」**成对**修改，防止只改一边——把 easysearch 的密码配置打到 elasticsearch 镜像上的错配，要压测报 401 才暴露。
 
+### 2.8 多环境并存（STACK）与并发的测量纪律
+
+默认情况下这套基础设施**任何时刻只存在一套资源**（2.5 的串行纪律）。要让多套环境并存，用 `STACK` 打开切片：
+
+```bash
+make up    STACK=x PROFILE=x86-main ENGINE=elasticsearch ZONE=cn-hangzhou-b VPC_CIDR=172.16.0.0/16 VSWITCH_CIDR=172.16.1.0/24
+make up    STACK=a PROFILE=arm-main ENGINE=elasticsearch ZONE=cn-hangzhou-j VPC_CIDR=172.17.0.0/16 VSWITCH_CIDR=172.17.1.0/24
+make bench STACK=x TRACK=geonames CLIENTS=8
+make fetch STACK=x                     # 产物落到 results/x/
+make stacks                            # 一眼看清云端到底有几套在烧钱
+make down  STACK=x CONFIRM=1           # 非 default stack 必须显式确认
+```
+
+`STACK` 是**唯一切片键**，它会同时决定下面六件事——少覆盖任何一层，两套环境就会互相踩：
+
+| 层 | default | `STACK=x` | 少覆盖的后果 |
+|---|---|---|---|
+| 资源名 | `esbench-perf-es-1` | `esbench-perf-x-es-1` | SSH 密钥对名在 region 内**全局唯一**，第二套 apply 直接报 `KeyPair.AlreadyExist` |
+| terraform state | `terraform.tfstate` | `terraform.tfstate.d/x/`（workspace） | 第二次 `make up` 变成"改写第一套"：`count` 不同会直接把已有节点销毁重建 |
+| provider 缓存 | `.stacks/default/` | `.stacks/x/` | 并发 `init` 互相改写 `.terraform/environment`（"当前 workspace"指针），apply 会打到别的栈上 |
+| 本地产物 | `results/` | `results/x/` | 两台 rally 机的产物混进同一目录，`fetch` 分不清谁是谁 |
+| OSS 归档 | `esrally-results/` | `esrally-results/x/` | `make fetch`（不带 `RUN_ID` = 拉整个前缀）会把多套产物拉成一坨 |
+| up 环境记录 | `.stacks/default/meta` | `.stacks/x/meta` | `make bench` 回读到**别的栈**的 PROFILE/ENGINE：arch 错标、就绪门禁节点数对不上 |
+
+**`STACK=default`（即不传）与历史行为逐字一致**，已在真实 state 上验证为 `0 to add / 0 to change / 0 to destroy`（只多两个 output）。所以引入这套机制不会让任何已有环境被判定为需要重建。
+
+#### 并发到底为了什么
+
+不是为了省时间，而是**消掉跨时段漂移**。串行四轮里第 1 轮和第 4 轮可能差几个小时，期间云侧宿主机负载、同宿主邻居压力、存储后端拥塞都变了，最后分不清差异来自引擎还是来自时段。并发强制它们在同一个时间窗内跑——这才是并发对照在方法论上站得住的地方。
+
+#### 但并发有它自己的代价：三条纪律
+
+1. **两栈尽量落在不同可用区**。同可用区的两套实例共享 ESSD 后端带宽与内网路径。注意杭州（cn-hangzhou）的 g8y/g8i 大规格实测**只有 b / j / k 有货，`-c` 无货**，所以并发两套用 `b + j` 或 `b + k`。`make matrix` 会自动查这个库存并给出建议。
+2. **并发只用于冒烟 / 链路验证 / 交叉初筛**；正式出报告的轮次仍走 2.5 的串行纪律。
+3. **只做 stack 之间的相对比较**，各栈绝对值只与「同时段、同 stack」的历史比。与 `shared-bench-host-consistency` 的判据一致：共享资源上不追求环境稳定，只保证结果可比。
+
+#### `make matrix`：按声明并行跑
+
+`stacks.yaml` 声明要跑哪些栈，`make matrix` 并行执行每栈的 `up → bench → fetch → down`：
+
+```bash
+make matrix                    # 交互确认后开跑
+make matrix EXTRA_ARGS="--dry-run"              # 只打印计划 + 库存预检，0 费用
+make matrix EXTRA_ARGS="--stacks x,a"           # 只跑指定的栈
+make matrix EXTRA_ARGS="--parallel 1"           # 退化成串行（做对照用）
+make matrix EXTRA_ARGS="--no-down"              # 保留实例，便于登进去查问题
+```
+
+设计上的三个硬约束：
+
+- **`down` 放在每栈自己的流水线里**，不是等全部跑完统一销毁——哪套先跑完就先释放它的计费资源；
+- **bench 失败也要 fetch、任何一步失败也要 down**——产物在实例数据盘上，实例一销毁就没了；反过来资源不销毁就是持续计费；
+- **库存预检只警告不阻断**，且"查询失败"必须报"未知"而不是"无货"——假警报比不报更糟（会让人对真警报麻木）。要硬跑加 `--no-preflight`。
+
+跑完自动生成 `results/_matrix/<ts>/summary.md`：环境对照、引擎侧关键指标（写入吞吐 / 体积 / 段数 / merge / p50 p100 延迟）、各 task 中位吞吐、以及一致性自检（error rate、核数、段数、耗时）。汇总表**只做机械汇总、不下结论**，口径声明写在表头。
+
+#### 成本口径：并发不额外花钱（这一条容易被想反）
+
+**跑 N 套与串行跑 N 轮，总实例时长相同、总花费相同。** 并发只是把同一批机时压进更短的时间窗：
+
+| | 总花费 | 墙钟 |
+|---|---|---|
+| 串行 2 轮（各 1 小时） | 10.50 元 | 2.0 小时 |
+| 并发 2 套（各 1 小时） | 10.50 元 | 1.0 小时 |
+
+（实测 cn-hangzhou 按量：`x86-cheap` 腿 5.74 元/时、`arm-cheap` 腿 4.76 元/时，均含系统盘与数据盘。）
+
+所以省钱的优先级 **串行开机 > 竞价 > 降规格** 依然成立——它管的是"总机时"；并发动的是"机时在时间轴上怎么摆"，不动总量。真正的代价是另外三项：
+
+1. **同时占用 N 倍 vCPU 配额**（两套 `*-main` 含 rally = 2 × (32 + 8) = 80 vCPU，可能触顶；`make matrix` 预检按这个口径查余量）；
+2. **爆炸半径变大**：任一套漏了 `down`，同时在烧的钱是 N 倍。`make stacks` 就是为盯这个而存在的；
+3. **竞价回收的并发暴露面更大**：同一时间窗内 N 套都在被回收风险下，不如串行摊开。
+
+换句话说：**并发是用"配额与运维风险"换"墙钟时间"，不是用钱换。** 这一点搞清楚之后，"要不要并发"就变成一个纯粹的判断——你需不需要那两小时。
+
 ---
 
 ## 3. 工作原理
 
 ```
 目录结构（省略零散文件）：
-├── Makefile                编排入口（setup/corpus/image-*/up/bench/fetch/down）
+├── Makefile                编排入口（setup/corpus/image-*/up/bench/run/fetch/down/stacks/matrix）
+├── stacks.yaml             并行矩阵声明：要同时跑哪几套环境（见 2.8）
 ├── terraform/              VPC/安全组/ECS/云盘
 │   └── terraform.tfvars    真实参数，不入库（make setup 生成）
 ├── scripts/
 │   ├── bootstrap.sh        新机器引导（make setup）
 │   ├── tf-env.sh           把 ~/.aliyun/config.json 的凭据注入 terraform（仅内存）
+│   ├── tf.sh               terraform 的唯一入口：TF_DATA_DIR + workspace 切换
 │   ├── build-image.sh      起临时实例 → install.sh → 打镜像 → 销毁（同名镜像自动跳过）
 │   ├── image.sh            镜像台账查询与切换（make image-ls / image-use）
 │   ├── install.sh          镜像内安装引擎与 esrally
 │   ├── prepare-corpus.sh   语料离线包（本机，0 费用）
 │   ├── userdata-*.sh.tpl   开机初始化（挂盘/配置/启动）
 │   ├── run-bench.sh        触发压测 + 归档 OSS
-│   └── fetch-results.sh    拉取产物
+│   ├── fetch-results.sh    拉取产物
+│   ├── stacks.sh           列出全部环境（本地 + 云端在计费的实例）
+│   ├── local-validate.sh   本地 Docker 验证 install.sh（make local-validate）
+│   ├── bench-matrix.sh     并行跑多套（up→bench→fetch→down）+ 库存预检；make run 复用它的单栈流水线
+│   └── matrix-summary.sh   把各栈报告汇总成对照表
+├── .stacks/                每 stack 的 provider 缓存、workspace 指针与 up 环境记录 meta（不入库）
 ├── corpus/                 语料（geonames/ 的 track 定义入库，大文件由 make corpus 生成）
 └── bin/                    terraform 官方二进制（不入库）
 ```
@@ -399,6 +497,14 @@ make local-validate ROLE=es ENGINE=easysearch ES_VER=2.4.0-2969
 | 数据盘用 ESSD PL1（按档位 100G） | PL1 的 350MB/s 低于各档实例带宽上限，永不触发突发回落，速度恒定才可比；geonames 2.8G + merge 峰值 <10G + HNSW 3.9G，不够可在线扩容 |
 | 堆固定 16g | 与基线一致；GC 停顿更短、p99 更稳；64G 机器余约 48G 给 page cache |
 | 报告文件名带时间戳 | esrally 对已存在的 markdown 报告是**追加**不是覆盖，重名会混入两场数据 |
+| 多环境用 `STACK` 单一变量 + terraform workspace 切片 | 只加 `-state` 参数是 legacy、且不解决命名冲突（SSH 密钥对名 region 内唯一）；只加 workspace 同样撞 key pair，且 `.terraform/environment` 是全局共享的"当前 workspace"指针，一个调用点忘了 select 就会 apply 到别的栈上。解法是**一个切片键贯穿六层**，并把所有 terraform 调用收进 `scripts/tf.sh`（只剩一处可能出错） |
+| `stack=default` 完全退化为历史命名 | 引入隔离能力的那一天，不能把已有环境判成需要重建。已用真实 state 验证为 `0 to add / 0 to change / 0 to destroy` |
+| `stacks.yaml` 只支持最小 YAML 子集，嵌套/行内集合直接报错 | 静默按一份自己没写过的配置去开机器，比拒绝执行贵得多 |
+| 并压矩阵里 `down` 放进每栈自己的流水线 | 哪套先跑完就先释放它的计费资源；统一在末尾销毁会让先完成的栈白白多烧一两个小时 |
+| 库存预检只警告、且"查询失败"报"未知"而非"无货" | 预检的目的是提前说出"云上开不出来"，不是替人决定能不能跑；把查询失败当成无货会制造假警报，假警报比不报更糟 |
+| `tf-env.sh` 的提示语一律走 stderr | 调用方常写 `$(tf.sh output -raw ...)`，混进 stdout 的提示语会把返回值污染成一句中文（`fetch-results.sh` 真的踩过） |
+| up 时把 PROFILE/ENGINE 落盘 `.stacks/<stack>/meta`，bench/status/run 缺省回读 | 没传参时的默认值应该来自「这套环境自己」，而不是 Makefile 全局默认——否则 up 用 arm-debug、bench 按默认档推导，arch 错标 + 就绪门禁退化成 1 节点，错得悄无声息。显式传参永远优先；`image-*` 等构建类目标不回读，防止镜像架构被上次 up 带偏 |
+| 所有脚本里 `$VAR` 紧跟中文/全角字符一律写成 `${VAR}` | macOS 自带 bash 3.2 会把多字节字节并进变量名：`$PAR）` 查的是名为 `PAR）` 的变量，`set -u` 下直接 `unbound variable` 崩溃（无 `set -u` 时静默输出空值），Linux bash 5 无此问题——这类雷只在 macOS 上炸 |
 
 ---
 
@@ -408,6 +514,9 @@ make local-validate ROLE=es ENGINE=easysearch ES_VER=2.4.0-2969
 2. **查询侧并发需要改 track**：geonames 的 `challenges/default.json` 里并发参数只有 `bulk_indexing_clients`（写入侧），搜索任务（`term`/`default`/`phrase`/`scroll`）没有 `clients`、走 esrally 默认 1——这正是历史 race 出现「latency == service time、零排队」的原因。要测查询吞吐上限，另存一份给搜索任务加了 `"clients": ...` 的 track 专用于爬坡，**保留原始 track 不动**才能与基线可比。
 3. **segment 数要用 `GET /_cat/segments/<索引>`**，不要用 `_all`——easysearch 的 `_all` 会计入 `.security` 索引，段数会虚高。
 4. **起跑前的环境一致性校验尚未内建**：`run-bench.sh` 目前只采集最简指纹（CPU 型号/核数/内存/governor/THP），没有绑核与背景负载检查。在同一台机器被其他业务占用时，结果可能不可比——需要更严格的隔离时，建议在起跑前手工确认 CPU 争用与 NUMA/绑核设置。
+5. **并发对照的可信度有上限，且这个上限无法用代码消除**：`make matrix` 能保证两套环境互不干扰（网络 / state / 命名 / 产物全部隔离），但**消不掉云侧共享层**——同可用区的 ESSD 后端带宽、内网路径、账号级配额。所以并发结果只作 stack 之间的相对比较。而且杭州的大规格实测只有 `b` / `j` / `k` 三个可用区有货，能错开的选择本就有限。这一条与 `shared-bench-host-consistency` 的判据一致：共享资源上不追求环境稳定，只保证结果可比。
+6. **库存预检依赖 `DescribeAvailableResource`，它返回的是快照不是预留**：预检通过不代表一定开得出来（紧俏规格与竞价实例尤甚）。反过来，预检失败时会明确报"未知"而不是"无货"，避免制造假警报。
+7. **`make stacks` 靠实例名前缀反推归属**：规则是 `<prefix>-<role>[-N]` → default、`<prefix>-<stack>-<role>[-N]` → 该 stack。因此 stack 名不能取 `es` / `rally`（terraform 的 validation 已拦住），实例名前缀也要保持 `project-env` 的形态。
 
 ---
 
@@ -423,3 +532,11 @@ make local-validate ROLE=es ENGINE=easysearch ES_VER=2.4.0-2969
 | bench 卡在下载 / 找不到 track | 镜像没烘焙语料 | `WITH_CORPUS=1` 重建 rally 镜像；`make ssh-rally 'ls /data/rally/benchmarks/tracks/'` |
 | bench 报 report 文件已存在 | 报告名重复（esrally 追加不覆盖） | 脚本已带时间戳；手改过文件名需注意 |
 | 产物取不到 | fetch 时实例已销毁且 OSS 没写成功 | 改用 `make fetch FROM=instance`（需实例还在）；或检查 `ossutil64` 配置与实例 RAM 角色权限 |
+| `make bench` 提示「无 up 记录」或「与 up 记录不一致」 | 环境不是当前 PROFILE 推导的这套；或环境是旧版 up 建的、还没有 meta | `make status` 看「记录」行核对；对不上就显式传 `PROFILE=` 或重跑一次 `make up` |
+| 忘了带 `STACK=`，操作到了别的环境 | Makefile 的 `STACK` 默认 `default`，而资源在 `x` 上 | `make stacks` 看云端实例与 workspace 列表；`make status STACK=x` 确认 |
+| 开第二套报 `KeyPair.AlreadyExist` | 资源名没带 stack（SSH 密钥对名 region 内全局唯一） | `make plan STACK=x` 看资源名是否带 `-x-` 前缀 |
+| 第二套 `make up` 把第一套改了 / 删了 | state 没隔离（workspace 未生效） | `make stacks` 看 workspace 列表；确认调用都走 `scripts/tf.sh` 而不是裸 `terraform` |
+| `make matrix` 报某栈可用区无货 | 目标 zone 该机型无库存 | 预检会直接列出有货可用区；杭州大规格只有 `b` / `j` / `k` |
+| `make matrix` 跑完但某栈没有可比数据 | 该栈 up 或 bench 失败，产物缺失 | 看 `results/_matrix/<ts>/<stack>.log`；汇总表会把缺产物的栈标成「（无产物）」 |
+| 汇总表里 `error rate` 不为 0 | 有请求失败，吞吐数字无意义 | 先看该栈 `rally.log`，再看 `cluster-watch.log` 判断是否实例被回收 |
+| `make down STACK=x` 拒绝执行 | 非 default stack 的保护，需要 `CONFIRM=1` | `make down STACK=x CONFIRM=1`（先 `make fetch STACK=x` 取回产物） |

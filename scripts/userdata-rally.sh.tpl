@@ -102,4 +102,10 @@ EOF
 chmod 600 /etc/es-oss.conf
 
 echo "=== rally init done ==="
-echo "下一步：make bench MATRIX=<file> 触发压测"
+# 注意：这里提示的是**操作者本机**要执行的命令，不是本机（rally 机）上的命令。
+# 早先写的是 "make bench MATRIX=<file>"，但 Makefile 里从来没有 MATRIX 这个变量，
+# 照着敲只会得到一个「没有可做之事」的空跑，纯误导。
+echo "下一步（回到你的操作机执行）："
+echo "  make bench TRACK=geonames CLIENTS=8      # 单栈压测"
+echo "  make matrix                              # 按 stacks.yaml 并行跑多套并汇总对照"
+echo "  （多环境并存时，bench/fetch/status 都要带上对应的 STACK=<名>）"

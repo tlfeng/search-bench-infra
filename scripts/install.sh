@@ -200,7 +200,7 @@ install_es() {
     curl -fsSL -o "$PKG" "$URL" || { echo "下载失败: $URL" >&2; exit 1; }
 
   else
-    echo "未知引擎 $ENGINE（支持 elasticsearch / easysearch）" >&2; exit 1
+    echo "未知引擎 ${ENGINE}（支持 elasticsearch / easysearch）" >&2; exit 1
   fi
 
   # 校验（两家都提供同名 .sha512）。校验失败即中止 —— 宁可构建失败，

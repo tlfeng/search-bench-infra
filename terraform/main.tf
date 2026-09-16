@@ -13,17 +13,31 @@ provider "alicloud" {
 }
 
 locals {
-  name_prefix = "${var.project}-${var.env}"
-  common_tags = {
-    project = var.project
-    env     = var.env
-    owner   = var.owner
-    managed = "terraform"
-  }
+  # ---------- 多环境切片 ----------
+  # 资源名 / 集群名按 stack 派生，但 stack=default 时**完全退化为历史命名**。
+  # 这不是风格问题而是硬要求：若 default 也改名，所有人的第一次 plan 都会看到
+  # 一堆 destroy/create，引入隔离能力的第一天就把已有环境炸掉。
+  name_prefix = var.stack == "default" ? "${var.project}-${var.env}" : "${var.project}-${var.env}-${var.stack}"
+  cluster_id  = var.stack == "default" ? var.cluster_name : "${var.cluster_name}-${var.stack}"
+
+  # 标签同理：default 不加 stack，避免存量环境出现无意义的 in-place tag 变更；
+  # 非 default 才带上，用于 BSS 分账与事后辨认实例归属。
+  common_tags = merge(
+    {
+      project = var.project
+      env     = var.env
+      owner   = var.owner
+      managed = "terraform"
+    },
+    var.stack == "default" ? {} : { stack = var.stack },
+  )
 
   # ES 节点固定内网 IP（从 .10 起，避开阿里云 VPC 保留的前几个地址）。
   # 必须固定：双节点要靠 seed_hosts 互相发现，而 user_data 在实例创建时就已确定，
   # 若等创建后再取 private_ip 会形成循环依赖。预先算出即可直接写进配置。
+  #
+  # 多栈并存时：每个 stack 是独立 VPC，同一网段互不冲突（本机无法互访）。
+  # 若将来要做 VPC 对等/CEN 互联，再用 -var 把 vpc_cidr/vswitch_cidr 按 stack 错开。
   es_ips = [for i in range(var.es_node_count) : cidrhost(var.vswitch_cidr, 10 + i)]
 }
 
@@ -175,7 +189,7 @@ resource "alicloud_instance" "es" {
     engine            = var.engine
     engine_home       = var.engine_home
     data_dir          = var.es_data_dir
-    cluster_name      = var.cluster_name
+    cluster_name      = local.cluster_id
     es_port           = var.es_http_port
     es_ips            = join(",", local.es_ips)
     es_transport_port = var.es_transport_port

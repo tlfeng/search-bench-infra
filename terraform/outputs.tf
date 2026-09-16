@@ -1,3 +1,27 @@
+output "stack" {
+  description = "当前环境切片键；default 表示未切片（资源名无后缀）"
+  value       = var.stack
+}
+
+output "name_prefix" {
+  description = "资源名前缀，多栈并存时用它辨认这套环境属于哪个 stack"
+  value       = local.name_prefix
+}
+
+# ---------- 档位目录（纯配置，不依赖任何资源） ----------
+# 给 scripts/bench-matrix.sh 做并发前的库存/规格预检用。
+# 刻意从 terraform 的 locals 导出而不是在 bash 里抄一份映射 ——
+# 抄一份就意味着「改档位忘了改脚本」，最终会拿着错的机型去做库存检查。
+output "profile_catalog" {
+  description = "全部档位 -> ES 侧架构/规格档/机型，脚本据此做预检"
+  value       = { for k, v in local.es_by_profile : k => { arch = v.arch, size = v.size, type = v.type } }
+}
+
+output "rally_catalog" {
+  description = "rally 侧 <架构>-<规格档> -> 机型"
+  value       = { for k, v in local.rally_by_key : k => v.type }
+}
+
 output "es_private_ips" {
   description = "ES 节点内网 IP，压测目标地址"
   value       = [for i in alicloud_instance.es : i.private_ip]

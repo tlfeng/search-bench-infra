@@ -1,0 +1,58 @@
+# 并行压测矩阵：一个 stack = 一套完全独立的环境
+# （独立 VPC / terraform workspace（state）/ 本地产物目录 / OSS 归档前缀）。
+#
+# scripts/bench-matrix.sh 读本文件，并行执行 up -> bench -> fetch -> down，
+# 最后把各栈的 esrally 报告汇总成一张对照表。
+#
+# ---------- 它真正的价值 ----------
+# 不是"省时间"，而是**消掉跨时段漂移**。串行四轮对照里，第 1 轮和第 4 轮可能差几个小时，
+# 期间云侧宿主机负载、同宿主邻居压力、存储后端拥塞都变了，最后你分不清差异来自引擎还是来自时段。
+# 并发强制它们在同一个时间窗内跑，这才是并发对照在方法论上站得住的地方。
+#
+# ---------- 测量纪律（详见 README 2.8） ----------
+#   1) 两个 stack 尽量落在不同可用区：同可用区两套实例共享 ESSD 后端带宽；
+#   2) 并发只用于冒烟 / 链路验证 / 交叉初筛，正式出报告的轮次仍应串行；
+#   3) 只做 stack 之间的相对比较；绝对值只与「同时段、同 stack」的历史比。
+#   杭州（cn-hangzhou）的 g8y/g8i 大规格实测有货的是 b / j / k，**-c 无货**，
+#   所以并发两套用 b + j 或 b + k；make matrix 会自动跑这个库存预检并给出建议。
+#
+# ---------- 格式约定 ----------
+# 只支持下面这两种结构：defaults 平表 + stacks 平表列表。
+# 解析器遇到嵌套 map / 行内 [ ] { } / 未知键会**直接报错**而不是猜 ——
+# 猜错的代价是你拿着一份自己没写过的配置去开机器。所以别加花活。
+# 值里不要出现冒号，也不要加引号（加了会被剥掉，但没必要）。
+#
+# ---------- 已知不支持 ----------
+# es_nodes（每栈覆盖节点数）：矩阵只会用档位自带的节点数（debug/arm-debug=1，其余=2）。
+# 要 3 节点这类非标拓扑，请走单栈命令 make up STACK=x ES_NODES=3 ——
+# 矩阵不会替你把它传进去，也别以为写了就会生效。
+
+defaults:
+  track: geonames
+  challenge: append-no-conflicts
+  clients: 8
+  codec: default
+  rally_on: arm          # 对应 Makefile 的 RALLY_ON（arm | x86）
+  spot_rally: 1          # ES 按量 + rally 竞价：rally 被回收只损失一轮，重跑即可
+
+stacks:
+  # 默认给的是 *-cheap（8C32G）。并发不减钱（同轮数 = 同总机时，只压缩时间轴），
+  # 但它把风险也叠在同一时间窗里：出问题时你同时损失两套、同时占 2 倍配额。
+  # 所以先用便宜档把"并发链路 + 汇总"整条路走通，再换 *-main 出正式数据。
+  #
+  # 出正式数据时这么改（注意 zone 要换成有货的可用区，见文件头）：
+  #   profile: x86-main   zone: cn-hangzhou-b
+  #   profile: arm-main   zone: cn-hangzhou-j
+  - name: x
+    profile: x86-cheap
+    engine: elasticsearch
+    zone: cn-hangzhou-b
+    vpc_cidr: 172.16.0.0/16
+    vswitch_cidr: 172.16.1.0/24
+
+  - name: a
+    profile: arm-cheap
+    engine: elasticsearch
+    zone: cn-hangzhou-j
+    vpc_cidr: 172.17.0.0/16
+    vswitch_cidr: 172.17.1.0/24

@@ -7,6 +7,9 @@ __pycache__/
 scripts/.tf-cli.generated.hcl
 .tf-cli.generated.hcl
 
+# 每个 stack 的 provider 缓存与「当前 workspace 指针」（多环境切片用，见 README 2.8）
+.stacks/
+
 # 凭据类文件：RAM 用户 AccessKey 的 CSV（含 Secret 与控制台密码）等，绝不入库
 *.csv
 

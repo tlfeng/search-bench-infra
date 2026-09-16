@@ -102,7 +102,7 @@ run_role() {
       docker cp "$CORPUS_PKG" "$cname:/root/$(basename "$CORPUS_PKG")" >/dev/null
       args="$args --corpus-pkg /root/$(basename "$CORPUS_PKG")"
     else
-      echo "  WARN: 语料包不存在 $CORPUS_PKG，跳过语料部分"
+      echo "  WARN: 语料包不存在 ${CORPUS_PKG}，跳过语料部分"
     fi
   fi
 
@@ -113,7 +113,7 @@ run_role() {
   rc=${PIPESTATUS[0]}
   echo "  ------------------------------------------------"
   echo "  install.sh 退出码：$rc"
-  [ "$rc" = "0" ] && pass "install.sh 执行成功" || fail "install.sh 执行成功（exit=$rc）"
+  [ "$rc" = "0" ] && pass "install.sh 执行成功" || fail "install.sh 执行成功（exit=${rc}）"
 
   # ---------- 按角色的校验点 ----------
   if [ "$role" = "rally" ]; then

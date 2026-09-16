@@ -23,6 +23,37 @@ variable "owner" {
   default = "perf-team"
 }
 
+# ---------- 多环境切片键 ----------
+variable "stack" {
+  description = <<-EOT
+    环境切片键。同一个目录、同一份代码下，用不同的 stack 并存多套互不干扰的环境
+    （典型用途：x86 与 ARM 两套同时跑，把跨时段漂移消掉）。
+
+    它会被注入到三处，缺一不可：
+      - 云上资源名（VPC / vSwitch / 安全组 / SSH 密钥对 / 集群名）
+      - terraform workspace（即 state 文件位置，由 scripts/tf.sh 负责切换）
+      - 本地产物目录 results/<stack>/ 与 OSS 归档前缀
+    因此必须是小写字母/数字/短横线 —— 它会变成资源名和 OSS 路径的一部分。
+
+    "default" 表示不切片：资源名退化为 project-env，集群名不加后缀，
+    与引入本变量之前的历史命名**完全一致**，所以已有环境不会出现任何重建。
+  EOT
+  type        = string
+  default     = "default"
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9-]{0,15}$", var.stack))
+    error_message = "stack 只能是小写字母/数字/短横线，1~16 位（它要进资源名、workspace 名与 OSS 路径）"
+  }
+
+  # 资源名形如 <prefix>-<stack>-<role>[-N]，而 default 栈是 <prefix>-<role>[-N]。
+  # 所以 stack 一旦长得像角色名，别人（和 scripts/stacks.sh）就无法从名字反推归属。
+  validation {
+    condition     = !can(regex("^(es|rally)(-|$)", var.stack))
+    error_message = "stack 不能是 es / rally 或以它们加短横线开头 —— 资源名里这两个词已经表示角色，会造成归属歧义"
+  }
+}
+
 variable "vpc_cidr" {
   type    = string
   default = "172.16.0.0/16"

@@ -148,8 +148,17 @@ cmd_fix_names() {
     fi
     if aliyun ecs ModifyImageAttribute --RegionId "$REGION_R" --ImageId "$i" --ImageName "$canon" >/dev/null 2>&1; then
       echo "  ✅ ${i}：$cur -> $canon"
-      awk -F'\t' -v id="$i" -v nm="$canon" 'BEGIN{OFS="\t"} $6 == id {$7 = nm} {print}' \
-        "$LEDGER" > "$LEDGER.tmp" && mv "$LEDGER.tmp" "$LEDGER"
+      # 读-改-写必须原子：固定名 $LEDGER.tmp 会让两个并发 fix-names 互相覆盖临时文件。
+      # mktemp 保证临时文件唯一，mv 保证替换是原子的（读者永远看不到写了一半的台账）。
+      local TMP_LEDGER
+      TMP_LEDGER="$(mktemp "${LEDGER}.XXXXXX")"
+      if awk -F'\t' -v id="$i" -v nm="$canon" 'BEGIN{OFS="\t"} $6 == id {$7 = nm} {print}' \
+           "$LEDGER" > "$TMP_LEDGER"; then
+        mv "$TMP_LEDGER" "$LEDGER"
+      else
+        rm -f "$TMP_LEDGER"
+        echo "  ⚠️  ${i} 已改名但台账更新失败，请手工修正 $LEDGER" >&2
+      fi
       changed=$((changed + 1))
     else
       echo "  ❌ $i 改名失败（目标名 ${canon}）"

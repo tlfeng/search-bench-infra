@@ -136,7 +136,7 @@ for f in "${FILES[@]}"; do
   [ -n "$BASE_URL" ] || die "$f 本地不存在且 track.json 无 base-url，无法下载"
   log "下载 $BASE_URL/$f （入方向流量通常免费，但国内到 GCS 可能慢/不通）"
   curl -fL --progress-bar --max-time 1800 "$BASE_URL/$f" -o "$dest.part" \
-    || die "下载失败：$BASE_URL/$f。可先手动下载后放到 $DATA_DEST/"
+    || die "下载失败：$BASE_URL/${f}。可先手动下载后放到 $DATA_DEST/"
   mv "$dest.part" "$dest"
 done
 log "语料就绪：$(du -sh "$DATA_DEST" | cut -f1)"
