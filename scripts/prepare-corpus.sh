@@ -11,7 +11,10 @@
 # 用法：
 #   ./scripts/prepare-corpus.sh                          # 默认 geonames
 #   ./scripts/prepare-corpus.sh --track geonames --out corpus
-#   ./scripts/prepare-corpus.sh --track-from ssh:root@183.214.11.36  # 从已有环境取 track 定义
+#   ./scripts/prepare-corpus.sh --track-src /path/to/tracks          # 从本地目录复制 track 定义
+#   ./scripts/prepare-corpus.sh --ssh-host root@<host> --ssh-key ~/.ssh/<key>   # 从已有环境取
+#
+# 只要本地 <out>/<track>/track.json 已存在就会直接复用，不会碰网络也不会碰 ssh。
 #
 # 产物：<out>/<track>-corpus.tar.gz  +  <out>/<track>-corpus.tar.gz.sha256
 # 包内结构（可直接解到 ~/.rally 下）：
@@ -25,10 +28,12 @@ export COPYFILE_DISABLE=1
 
 TRACK="geonames"
 OUT="corpus"
-TRACK_SRC=""          # 空=自动（本地已有优先，其次 185）
-RALLY_SRC_DIR="/opt/backup/esrally-work/tracks"
-SSH_HOST="root@183.214.11.36"
-SSH_KEY="$HOME/.ssh/infininet"
+TRACK_SRC=""          # 空=自动（本地已暂存的 track 优先；否则走 --ssh-host 取）
+# 三个 ssh 相关参数都不设默认值：从已有环境取 track 定义属于「你有这个环境才用得上」的路径，
+# 写死主机/私钥/目录既不可移植也容易泄露内部信息。只支持命令行或环境变量传入。
+RALLY_SRC_DIR="${CORPUS_SSH_DIR:-}"
+SSH_HOST="${CORPUS_SSH_HOST:-}"
+SSH_KEY="${CORPUS_SSH_KEY:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,6 +42,7 @@ while [[ $# -gt 0 ]]; do
     --track-src)  TRACK_SRC="$2"; shift 2;;
     --ssh-host)   SSH_HOST="$2"; shift 2;;
     --ssh-key)    SSH_KEY="$2"; shift 2;;
+    --ssh-dir)    RALLY_SRC_DIR="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 1;;
   esac
 done
@@ -62,9 +68,14 @@ elif [ -n "$TRACK_SRC" ] && [ -d "$TRACK_SRC" ]; then
   log "从 $TRACK_SRC 复制 track 定义"
   rsync -a --exclude '__pycache__' "$TRACK_SRC/" "$TRACK_DEST/"
 else
-  # 从已有压测环境取（track 定义很小，且能保证与历史基线同版本）
+  # 从已有环境取（track 定义很小，且能保证与历史基线同版本）
+  [ -n "$SSH_HOST" ] || die "本地没有 corpus/$TRACK/track.json，也没指定来源。请用 --track-src <目录>，或 --ssh-host <user@host>（可选 --ssh-key）
+         注意 track 定义一旦取回，建议顺手把它提交进 corpus/$TRACK/，以后就不再依赖远端"
+  [ -n "$RALLY_SRC_DIR" ] || die "用 ssh 取 track 时还要给 --ssh-dir <远端存放 tracks 的目录>"
   log "从 $SSH_HOST 的 $RALLY_SRC_DIR/$TRACK 取 track 定义"
-  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_HOST" \
+  SSH_OPTS=(-o StrictHostKeyChecking=no)
+  if [ -n "$SSH_KEY" ]; then SSH_OPTS+=(-i "$SSH_KEY"); fi
+  ssh "${SSH_OPTS[@]}" "$SSH_HOST" \
       "cd '$RALLY_SRC_DIR' && tar czf - $TRACK --exclude=__pycache__" \
       | tar xzf - -C "$STAGE/benchmarks/tracks/"
 fi

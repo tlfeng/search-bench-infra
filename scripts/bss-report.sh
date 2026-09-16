@@ -61,7 +61,7 @@ echo "$BAL" | jq -r '
   end' 2>/dev/null || echo "$BAL" | head -12
 
 echo
-echo "=== 当月消耗（$MONTH）==="
+echo "=== 当月消耗（${MONTH}）==="
 BILL=$(aliyun bssopenapi QueryAccountBill --BillingCycle "$MONTH" 2>&1) || true
 if echo "$BILL" | grep -qiE 'not ?authorized|nopermission|forbidden|not authorized to (call|do)'; then
   echo "  （账单查询也需要 BSS 只读权限）"

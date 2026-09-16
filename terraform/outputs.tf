@@ -39,6 +39,14 @@ output "profile" {
   }
 }
 
+output "billing" {
+  description = "当前生效的计费方式；spot=竞价（可能被回收），postpaid=按量"
+  value = {
+    es    = local.es_use_spot ? "spot" : "postpaid"
+    rally = local.rally_use_spot ? "spot" : "postpaid"
+  }
+}
+
 output "ssh_hint" {
   description = "登录提示"
   value       = "ssh -i <私钥> root@${alicloud_instance.rally.public_ip}"

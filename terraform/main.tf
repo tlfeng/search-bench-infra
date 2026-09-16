@@ -72,6 +72,13 @@ locals {
   }
 }
 
+# 计费方式：单侧的 es_use_spot / rally_use_spot 优先，留空则跟随全局 use_spot。
+# 单独抽出来是为了能在 outputs 里回显，避免「以为在跑竞价、其实按量」这类误判。
+locals {
+  es_use_spot    = coalesce(var.es_use_spot, var.use_spot)
+  rally_use_spot = coalesce(var.rally_use_spot, var.use_spot)
+}
+
 # ---------- 网络 ----------
 resource "alicloud_vpc" "this" {
   vpc_name   = "${local.name_prefix}-vpc"
@@ -142,8 +149,9 @@ resource "alicloud_instance" "es" {
   security_groups      = [alicloud_security_group.es.id]
   key_name             = var.public_key != "" ? alicloud_key_pair.this[0].key_pair_name : null
   instance_charge_type = "PostPaid"
-  spot_strategy        = var.use_spot ? "SpotAsPriceGo" : "NoSpot"
-  private_ip           = local.es_ips[count.index]
+  # spot_strategy 是 ForceNew：改计费方式会重建实例（先 fetch 产物，见 README 2.2）
+  spot_strategy = local.es_use_spot ? "SpotAsPriceGo" : "NoSpot"
+  private_ip    = local.es_ips[count.index]
   # ES 节点永不分配公网：所有运维经 rally 机跳板走内网，减少攻击面也避免带宽费
   internet_max_bandwidth_out = 0
   password                   = var.public_key != "" ? null : var.instance_password
@@ -201,7 +209,7 @@ resource "alicloud_instance" "rally" {
   security_groups      = [alicloud_security_group.es.id]
   key_name             = var.public_key != "" ? alicloud_key_pair.this[0].key_pair_name : null
   instance_charge_type = "PostPaid"
-  spot_strategy        = var.use_spot ? "SpotAsPriceGo" : "NoSpot"
+  spot_strategy        = local.rally_use_spot ? "SpotAsPriceGo" : "NoSpot"
   # 按流量计费（internet_charge_type 默认 PayByTraffic）：只对出方向收费，
   # 下载（入方向）免费；带宽峰值不额外计费，所以开大只会让下载更快。
   # 入网带宽 = max(10, 出网带宽)，设 100 才能拿到 100Mbps 入网。

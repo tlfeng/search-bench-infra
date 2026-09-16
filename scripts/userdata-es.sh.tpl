@@ -34,18 +34,26 @@ if [ -n "$DISK" ] && mountpoint -q /mnt 2>/dev/null; then
   umount /mnt 2>/dev/null || true
 fi
 
-# 未格式化才格式化（已有分区/文件系统一律不动）
-if [ -n "$DISK" ] && ! blkid "$DISK" >/dev/null 2>&1 && ! blkid "$${DISK}1" >/dev/null 2>&1; then
+# NVMe 分区名是 /dev/nvmeXn1p1（不是 /dev/nvmeXn11），老式盘是 /dev/vdb1。
+# 自动探测第一个分区设备名，两种命名都能正确处理。
+# 末尾 || true 是必须的：未分区时 grep 无匹配返回 1，而
+# PART="$(first_part ...)" 是简单赋值，set -e 下会直接结束整个脚本。
+first_part() { # $1=DISK → 输出第一个分区设备路径（无分区则空）
+  lsblk -lnpo NAME,TYPE "$${1}" 2>/dev/null | grep ' part' | head -1 | cut -d' ' -f1 || true
+}
+PART="$(first_part "$DISK")"
+if [ -n "$DISK" ] && ! blkid "$DISK" >/dev/null 2>&1 && [ -z "$PART" ]; then
   parted -s "$DISK" mklabel gpt
   parted -s "$DISK" mkpart primary ext4 1MiB 100%
   sleep 2
-  mkfs.ext4 -F "$${DISK}1"
+  PART="$(first_part "$DISK")"
+  mkfs.ext4 -F "$PART"
 fi
 
 mkdir -p "$DATA_DIR"
 if [ -n "$DISK" ]; then
   DEV="$DISK"
-  [ -e "$${DISK}1" ] && DEV="$${DISK}1"
+  [ -n "$PART" ] && DEV="$PART"
   if ! mountpoint -q "$DATA_DIR"; then
     mount "$DEV" "$DATA_DIR"
     grep -q "$DATA_DIR" /etc/fstab || echo "$DEV $DATA_DIR ext4 defaults,noatime 0 0" >> /etc/fstab

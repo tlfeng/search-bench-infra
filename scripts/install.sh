@@ -3,14 +3,15 @@
 #
 # 用法：
 #   ./install.sh --role es    --arch x86_64  [--engine elasticsearch] [--version 8.19.20]
-#   ./install.sh --role rally --arch x86_64
+#   ./install.sh --role rally --arch x86_64  [--version 2.12.0]
 set -euo pipefail
 
 ROLE=""
 ARCH=""
 ENGINE="elasticsearch"
-VERSION=""             # 留空则按引擎取默认：es=8.19.20，easysearch=2.4.0-2963
-ES_PASS="Qwer@123"     # 与 185 环境一致的 admin 密码
+VERSION=""             # es 角色：留空按引擎取默认 es=8.19.20 / easysearch=2.4.0-2963
+RALLY_VERSION="2.12.0" # rally 角色：esrally 版本（--version 可覆盖，镜像名会带上它）
+ES_PASS="Qwer@123"     # 默认 admin 密码，可用 --es-pass 覆盖（必须与 userdata 注入的 es_password 一致）
 ES_HOME="/opt/es"
 RALLY_HOME="/opt/esrally"
 ES_PKG_URL=""      # easysearch 等内部版本用它覆盖
@@ -38,6 +39,11 @@ done
 
 [ -n "$ROLE" ] || { echo "--role es|rally required" >&2; exit 1; }
 [ -n "$ARCH" ] || ARCH="$(uname -m)"
+
+# rally 角色：--version 指的是 esrally 版本
+if [ "$ROLE" = "rally" ] && [ -n "${VERSION:-}" ]; then
+  RALLY_VERSION="$VERSION"
+fi
 
 # 版本留空时按引擎取默认（easysearch 的版本串带 build 号，与 ES 不同）
 if [ -z "$VERSION" ]; then
@@ -331,7 +337,7 @@ ensure_build_env() {
 }
 
 # ---------- Python 解释器选择 ----------
-# esrally 2.12.0 要求 Python >= 3.9；而 RHEL8 世代（含 Alibaba Cloud Linux 3）
+# esrally 2.x 要求 Python >= 3.9；而 RHEL8 世代（含 Alibaba Cloud Linux 3）
 # 系统 python3 只有 3.6.8，直接 `pip install esrally` 会被 Requires-Python 挡下。
 # 这里按「先找已装的够新解释器，再从 dnf 模块yum 装一个」的顺序兜底。
 PY_MIN="3.9"
@@ -380,7 +386,7 @@ install_rally() {
   fi
 
   PY="$(pick_python)" || {
-    echo "ERROR: 找不到 Python >= 3.9（esrally 2.12.0 的硬要求）" >&2
+    echo "ERROR: 找不到 Python >= 3.9（esrally ${RALLY_VERSION} 的硬要求）" >&2
     echo "       系统 python3 版本：$(python3 -V 2>&1)" >&2
     exit 1
   }
@@ -397,13 +403,56 @@ install_rally() {
   export PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST:-$PIP_HOST}"
   log "pip 源：$PIP_INDEX_URL"
   pip install -q --upgrade pip wheel setuptools
-  pip install -q esrally==2.12.0
+  pip install -q "esrally==${RALLY_VERSION}"
 
   # 可选：换用内部源码分支（项目约定路径 ~/github/rally）
   if [ -n "$RALLY_PKG_URL" ]; then
     log "install rally from $RALLY_PKG_URL"
     pip install -q "$RALLY_PKG_URL"
   fi
+
+  # easysearch 兼容补丁 —— 写进 rally venv 的 sitecustomize.py，随镜像固化。
+  #
+  # 为什么需要：esrally 自带的 _ProductChecker 拒绝「非 Elasticsearch 产品」
+  # （esrally/client/synchronous.py 抛 UnsupportedProductError），判定依据是
+  # version.number —— easysearch 自报 2.4.0，被当成「ES 2.4.0，< 6.8」而拒连。
+  # 补丁只在服务端自述为 easysearch 时放行，连真正的 Elasticsearch 仍走原校验，
+  # 不削弱「误连错集群」的防护。
+  #
+  # 配套：esrally 还要求集群版本 >= 6.8.0，因此 race 时必须显式指定真实血统
+  # （easysearch 2.x 基于 ES 7.10.2）—— run-bench.sh 传 --distribution-version，
+  # Makefile 在 engine=easysearch 时自动带上 7.10.2。
+  SITE_PACKAGES="$("$RALLY_HOME/bin/python" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+  log "写入 easysearch 兼容补丁 -> ${SITE_PACKAGES}/sitecustomize.py"
+  cat > "$SITE_PACKAGES/sitecustomize.py" <<'PYEOF'
+# easysearch 兼容补丁（由 search-bench-infra 的 install.sh 写入，随 rally 镜像固化）
+#
+# esrally 的 _ProductChecker 依据 version.number 判断服务端是否 Elasticsearch，
+# easysearch 自报 2.4.0 会被判为「未知产品」而拒绝连接。这里仅在服务端自述为
+# easysearch 时放行该判定；其余情况（含真正的 Elasticsearch）保持原校验不变。
+try:
+    import esrally.client.synchronous as _sync
+
+    _pc = getattr(_sync, "_ProductChecker", None)
+    if _pc is not None:
+        _orig_check = _pc.check_product.__func__
+
+        def _check_product(cls, headers, response):
+            try:
+                ver = (response or {}).get("version") or {}
+            except AttributeError:
+                ver = {}
+            distribution = str(ver.get("distribution") or "").lower()
+            number = str(ver.get("number") or "")
+            if distribution == "easysearch" or number.startswith("2."):
+                return True  # SUCCESS
+            return _orig_check(cls, headers, response)
+
+        _pc.check_product = classmethod(_check_product)
+except Exception:
+    # 补丁失败不影响连 Elasticsearch 的正常使用
+    pass
+PYEOF
 
   mkdir -p /data/rally/{benchmarks,tracks,results,corpus,logs}
 

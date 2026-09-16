@@ -71,6 +71,7 @@ RALLY_BUILD_TYPE := $(if $(filter arm,$(RALLY_ON)),ecs.g8y.large,ecs.g8i.large)
 # CLIENTS=<并发数>                不传则用 track 自带默认
 # ENGINE_NAME=es|ez               只用于打 user-tags，便于事后筛选
 # RUN_ID=<场次 id>                仅 fetch 时用
+# FROM=oss|instance               仅 fetch 时用，默认 oss；本机无 ossutil64 会自动回退 instance（需实例还在）
 # LOCAL_DIR=<路径>                仅 fetch 时用，默认 results/
 TRACK ?=
 CHALLENGE ?=
@@ -91,6 +92,45 @@ ENGINE_PASS := $(if $(filter easysearch,$(ENGINE)),$(EZ_PASS),$(ES_PASS))
 # 盘小自定义镜像的快照存储费也同步下降。数据一律放数据盘 /data。
 SYSTEM_DISK_SIZE := 40
 
+# ---------- 计费（按量 / 竞价） ----------
+# 三个都不传 = 沿用 terraform.tfvars 里的值（当前为按量）。
+# 命令行传了就覆盖 tfvars，用于「同一套 tfvars 临时跑一轮便宜的调试」：
+#   make up USE_SPOT=1              整套（ES + rally）竞价
+#   make up SPOT_RALLY=1            ES 按量 + rally 竞价（推荐：ES 稳定，rally 被回收只重跑）
+#   make up USE_SPOT=1 SPOT_ES=0    整套竞价，但 ES 强制按量
+# 取值 1/true/yes/on = 竞价，0/false/no/off = 按量。
+# 注意 spot_strategy 是 ForceNew：切换计费方式会重建实例，数据盘 delete_with_instance=true
+# 会跟着销毁——对已有环境改这个值之前先 make fetch，否则产物随实例一起没了。
+USE_SPOT   ?=
+SPOT_ES    ?=
+SPOT_RALLY ?=
+
+# 归一化成 terraform 认的 true/false；大小写不敏感，避免 SPOT_ES=True 被静默当成按量
+asbool = $(if $(filter 1 true yes on,$(shell echo $(1) | tr 'A-Z' 'a-z')),true,false)
+
+SPOT_ARGS :=
+ifneq ($(strip $(USE_SPOT)),)
+SPOT_ARGS += -var="use_spot=$(call asbool,$(USE_SPOT))"
+endif
+ifneq ($(strip $(SPOT_ES)),)
+SPOT_ARGS += -var="es_use_spot=$(call asbool,$(SPOT_ES))"
+endif
+ifneq ($(strip $(SPOT_RALLY)),)
+SPOT_ARGS += -var="rally_use_spot=$(call asbool,$(SPOT_RALLY))"
+endif
+
+# plan / up 共用同一份变量清单：两处各写一遍迟早会漏（新增变量只改一处）
+TF_VARS := -var="profile=$(PROFILE)" \
+           -var="rally_arch=$(RALLY_ON)" \
+           -var="engine=$(ENGINE)" \
+           -var="es_password=$(ENGINE_PASS)" \
+           -var="es_node_count=$(ES_NODES)" \
+           -var="es_data_disk_category=$(ES_DISK_CAT)" \
+           -var="es_data_disk_size=$(ES_DISK_SIZE)" \
+           -var="rally_data_disk_category=$(RALLY_DISK_CAT)" \
+           -var="rally_data_disk_size=$(RALLY_DISK_SIZE)" \
+           -var="system_disk_size=$(SYSTEM_DISK_SIZE)"
+
 # 版本：ES 与 easysearch 各自的默认值
 ES_VER ?= 8.19.20
 # easysearch 用 snapshot/bundle 的 2.4.0-2969：发布包本体不含 JDK，
@@ -102,9 +142,11 @@ EZ_CHANNEL ?= snapshot
 EZ_BUNDLE  ?= 1
 EZ_VER ?= 2.4.0-2969
 ES_VER ?=                     # 留空按引擎取默认：es=8.19.20 / easysearch=2.4.0-2963
+# esrally 版本：编入 rally 镜像名（esbench-rally-<RALLY_VER>-<arch>），并传给 install.sh
+RALLY_VER ?= 2.12.0
 BASE_IMG ?=                   # 基础镜像正则，留空用默认 ^aliyun_4_(x64|arm64)_20G_alibase_[0-9]{8}[.]vhd$；需要 Rocky 时传 '^rockylinux_9'
 
-.PHONY: help init validate fmt plan corpus balance local-validate setup image-all image-es image-rally up status \
+.PHONY: help init validate fmt plan corpus balance local-validate setup image-all image-es image-rally image-ls image-use image-fix-names up status \
         ssh-rally ssh-es1 ssh-es2 bench fetch down clean tail-rally
 
 help:
@@ -122,6 +164,12 @@ help:
 	@echo "  arm   ARM 4C16G/8C32G，比同规格 x86 便宜约 23.5%（默认）"
 	@echo "  x86   若实测 ARM 单核压不满服务端，改回这个"
 	@echo
+	@echo "计费（USE_SPOT / SPOT_ES / SPOT_RALLY，三者都不传则沿用 terraform.tfvars）："
+	@echo "  make up USE_SPOT=1            整套竞价（约按量 2 折，可能被回收）"
+	@echo "  make up SPOT_RALLY=1          ES 按量 + rally 竞价（推荐：ES 稳定，rally 被回收只重跑）"
+	@echo "  1/true/yes/on = 竞价，0/false/no/off = 按量；正式出报告的轮次不要开"
+	@echo "  改计费方式会重建实例（数据盘一起销毁），先 make fetch 取回产物"
+	@echo
 	@echo "首次使用（0 费用 -> 最省）："
 	@echo "  make setup                    新机器引导：生成 tfvars + 预热 provider + 自检（凭据先手动 aliyun configure）"
 	@echo "  make corpus                   准备语料离线包（本机执行，不产生云费用）"
@@ -134,13 +182,16 @@ help:
 	@echo "  make up                       按档位创建 ECS（ES + rally）"
 	@echo "  make bench TRACK=geonames CLIENTS=8"
 	@echo "  make bench TEST_MODE=1        极小数据集，秒级完成，只用于打通链路"
-	@echo "  make fetch                    取回产物到 results/"
+	@echo "  make fetch [FROM=instance]    取回产物到 results/（默认从 OSS 拉）"
 	@echo "  make down                     销毁全部资源（省钱）"
+	@echo "  make image-ls                 查看镜像台账，标注 tfvars 当前指向"
+	@echo "  make image-use ENGINE=ez ARCH=arm   切换 tfvars 指向的镜像（同步改 engine）"
+	@echo "  make image-fix-names          存量镜像名补版本（已含版本的不动）"
 	@echo
 	@echo "排查（都不产生费用）："
 	@echo "  make validate                 HCL 语法检查"
 	@echo "  make plan                     预览将要创建的资源"
-	@echo "  make status                   查看 IP、target-hosts、当前档位"
+	@echo "  make status                   查看 IP、target-hosts、当前档位与计费方式"
 	@echo "  make ssh-rally / ssh-es1      直接登录"
 	@echo "  make tail-rally               看 rally 机初始化日志"
 	@echo
@@ -164,17 +215,7 @@ fmt:
 	cd $(TF) && $(TERRAFORM) fmt -recursive
 
 plan: init
-	cd $(TF) && . $(TFENV) && $(TERRAFORM) plan \
-	  -var="profile=$(PROFILE)" \
-	  -var="rally_arch=$(RALLY_ON)" \
-	  -var="engine=$(ENGINE)" \
-	  -var="es_password=$(ENGINE_PASS)" \
-	  -var="es_node_count=$(ES_NODES)" \
-	  -var="es_data_disk_category=$(ES_DISK_CAT)" \
-	  -var="es_data_disk_size=$(ES_DISK_SIZE)" \
-	  -var="rally_data_disk_category=$(RALLY_DISK_CAT)" \
-	  -var="rally_data_disk_size=$(RALLY_DISK_SIZE)" \
-	  -var="system_disk_size=$(SYSTEM_DISK_SIZE)"
+	cd $(TF) && . $(TFENV) && $(TERRAFORM) plan $(TF_VARS) $(SPOT_ARGS)
 
 # 用变量拼接而不是 $(if) 内联：后者在参数为空时会留下悬空的续行符，脆弱且难读
 ES_ARGS := --role es --arch $(ARCH) --instance-type $(BUILD_TYPE) --engine $(ENGINE) --es-pass $(ENGINE_PASS)
@@ -187,6 +228,7 @@ endif
 endif
 
 RALLY_ARGS := --role rally --arch $(RALLY_ARCH) --instance-type $(RALLY_BUILD_TYPE)
+RALLY_ARGS += --version $(RALLY_VER)
 
 ifneq ($(strip $(BASE_IMG)),)
 ES_ARGS    += --base-image-regex '$(BASE_IMG)'
@@ -216,6 +258,14 @@ BENCH_ARGS += --tag arch=$(if $(filter arm%,$(PROFILE)),arm,x86)
 # TEST_MODE=1：用 esrally 的 --test-mode（极小数据集，秒级完成），只用于打通链路
 ifeq ($(strip $(TEST_MODE)),1)
 BENCH_ARGS += --test-mode
+endif
+
+# easysearch 自报版本 2.4.0，esrally 要求集群版本 >= 6.8.0，必须显式告知真实血统
+# （easysearch 2.x 基于 ES 7.10.2）。ENGINE_NAME=ez 或 ENGINE=easysearch 时自动带上，
+# 也可手动 DIST_VERSION=7.10.2 覆盖。
+DIST_VERSION ?= $(if $(filter ez easysearch,$(or $(ENGINE_NAME),$(ENGINE))),7.10.2,)
+ifneq ($(strip $(DIST_VERSION)),)
+BENCH_ARGS += --dist-version $(DIST_VERSION)
 endif
 
 # 本地容器验证：在 Docker 里跑 install.sh，0 费用地把「建镜像」逻辑验掉。
@@ -258,18 +308,22 @@ image-es:
 image-rally:
 	$(SCRIPTS)/build-image.sh $(RALLY_ARGS)
 
+# 镜像台账：列出已构建的全部镜像，标注 tfvars 当前指向哪张（0 费用，纯本地）
+image-ls:
+	$(SCRIPTS)/image.sh ls
+
+# 切换 tfvars 指向的镜像（防「引擎配置与镜像」错配），如：
+#   make image-use ENGINE=easysearch ARCH=x86    # 切 ES 镜像并同步 engine
+#   make image-use --id m-xxxx                   # 按镜像 ID 切
+image-use:
+	$(SCRIPTS)/image.sh use $(if $(ENGINE),--engine $(ENGINE),) $(if $(ARCH),--arch $(ARCH),) $(if $(ROLE),--role $(ROLE),) $(if $(ID),--id $(ID),)
+
+# 给存量镜像名补版本号（名字里已含版本的不动），并同步台账
+image-fix-names:
+	$(SCRIPTS)/image.sh fix-names
+
 up: init
-	cd $(TF) && . $(TFENV) && $(TERRAFORM) apply -auto-approve \
-	  -var="profile=$(PROFILE)" \
-	  -var="rally_arch=$(RALLY_ON)" \
-	  -var="engine=$(ENGINE)" \
-	  -var="es_password=$(ENGINE_PASS)" \
-	  -var="es_node_count=$(ES_NODES)" \
-	  -var="es_data_disk_category=$(ES_DISK_CAT)" \
-	  -var="es_data_disk_size=$(ES_DISK_SIZE)" \
-	  -var="rally_data_disk_category=$(RALLY_DISK_CAT)" \
-	  -var="rally_data_disk_size=$(RALLY_DISK_SIZE)" \
-	  -var="system_disk_size=$(SYSTEM_DISK_SIZE)"
+	cd $(TF) && . $(TFENV) && $(TERRAFORM) apply -auto-approve $(TF_VARS) $(SPOT_ARGS)
 	@$(MAKE) --no-print-directory status
 
 status:
@@ -291,7 +345,7 @@ bench:
 	$(SCRIPTS)/run-bench.sh $(BENCH_ARGS)
 
 fetch:
-	$(SCRIPTS)/fetch-results.sh $(if $(RUN_ID),--run-id $(RUN_ID),)
+	$(SCRIPTS)/fetch-results.sh $(if $(RUN_ID),--run-id $(RUN_ID),) $(if $(FROM),--from $(FROM),)
 
 down:
 	cd $(TF) && . $(TFENV) && $(TERRAFORM) destroy -auto-approve

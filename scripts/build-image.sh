@@ -13,10 +13,13 @@ set -euo pipefail
 
 ROLE=""; ARCH=""; INSTANCE_TYPE=""; ES_PKG_URL=""; ENGINE="elasticsearch"; VERSION=""
 ES_PASS="Qwer@123"
+ES_CHANNEL="stable"    # --es-channel stable|snapshot（easysearch 用）
+ES_BUNDLE=0            # --es-bundle：easysearch 用自带 JDK 的 bundle 包
 IMAGE_NAME_PREFIX="esbench"
+FORCE="${FORCE:-0}"    # FORCE=1：跳过「同名镜像已存在」查重，强制重建（名字追加时间戳后缀防撞名）
 BASE_IMAGE_REGEX="^aliyun_4_(x64|arm64)_20G_alibase_[0-9]{8}[.]vhd$"   # 可用 --base-image-regex 覆盖为 ^rockylinux_9 等
 CORPUS_PKG=""          # --with-corpus <tar.gz>：把 esrally 语料烘焙进镜像
-KEEP_ON_FAIL=0         # --keep-on-failure：失败时保留临时实例，便于登进去排查
+KEEP_ON_FAIL="${KEEP_ON_FAIL:-0}"   # KEEP_ON_FAIL=1 或 --keep-on-failure：失败时保留临时实例，便于登进去排查
 SYSTEM_DISK_SIZE=40    # --system-disk-size：构建实例的系统盘大小。**镜像大小 = 这个值**，
                        # 必须与运行期 system_disk_size 一致，否则会报 InvalidSystemDiskSize.LessThanImageSize
 
@@ -27,12 +30,15 @@ while [[ $# -gt 0 ]]; do
     --instance-type) INSTANCE_TYPE="$2"; shift 2;;
     --es-pkg-url) ES_PKG_URL="$2"; shift 2;;
     --es-pass) ES_PASS="$2"; shift 2;;
+    --es-channel) ES_CHANNEL="$2"; shift 2;;
+    --es-bundle) ES_BUNDLE=1; shift 1;;
     --engine) ENGINE="$2"; shift 2;;
     --version) VERSION="$2"; shift 2;;
     --image-name) IMAGE_NAME_PREFIX="$2"; shift 2;;
     --base-image-regex) BASE_IMAGE_REGEX="$2"; shift 2;;
     --with-corpus) CORPUS_PKG="$2"; shift 2;;
     --keep-on-failure) KEEP_ON_FAIL=1; shift 1;;
+    --force) FORCE=1; shift 1;;
     --system-disk-size) SYSTEM_DISK_SIZE="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 1;;
   esac
@@ -79,6 +85,9 @@ elif [ -z "${ALICLOUD_ACCESS_KEY:-}" ]; then
   echo "       请先执行：aliyun configure" >&2
   exit 1
 fi
+# 镜像命名规则的唯一事实来源（image.sh fix-names 也用它，保证两边一致）
+# shellcheck disable=SC1091
+. "$HERE/image-name.sh"
 ROOT="$(dirname "$HERE")"
 # 地域与可用区沿用主配置：ARM 机型并非每个可用区都有货，
 # 构建实例也必须落在有货的可用区，否则 create 会失败
@@ -91,7 +100,11 @@ fi
 
 SUFFIX="$(date +%m%d%H%M%S)"
 BUILD_DIR="$ROOT/.build-image-$ROLE-$ARCH"
-IMAGE_NAME="${IMAGE_NAME_PREFIX}-${ROLE}-${ARCH}-$(date +%Y%m%d%H%M)"
+# 确定性镜像名：唯一对应「角色+引擎/esrally+版本+架构」组合，不带时间戳——
+# 这让构建前按名字查重成为可能（见下）；FORCE=1 重建时补时间戳后缀防撞名。
+# 命名规则统一在 scripts/image-name.sh（compose_image_name），
+# rally 的版本即 esrally 版本（默认 2.12.0，与 install.sh 的 RALLY_VERSION 默认一致）。
+IMAGE_NAME=$(compose_image_name "$IMAGE_NAME_PREFIX" "$ROLE" "$ENGINE" "$VERSION" "$ARCH" "$CORPUS_PKG")
 
 # 架构命名要分两套：
 #   阿里云镜像(provider architecture 字段) -> arm64 / x86_64
@@ -102,6 +115,23 @@ case "$ARCH" in
   *) echo "ERROR: 不支持的架构 $ARCH" >&2; exit 1 ;;
 esac
 PKG_ARCH="$ARCH"
+
+# 构建前查重：同名可用镜像已存在就跳过——镜像建一次长期复用，
+# 重复构建只是白白多付快照存储、再多一个分不清的 ID。
+# FORCE=1 跳过查重强制重建（镜像名会追加时间戳后缀防撞名）。
+if [ "$FORCE" != "1" ]; then
+  EXISTING=$(aliyun ecs DescribeImages --RegionId "${REGION:-cn-hangzhou}" \
+               --ImageName "$IMAGE_NAME" 2>/dev/null \
+             | jq -r --arg n "$IMAGE_NAME" \
+                 '[.Images.Image[]? | select(.ImageName == $n and .Status == "Available")][0].ImageId // empty')
+  if [ -n "$EXISTING" ]; then
+    echo "=== 同名可用镜像已存在，跳过构建 ==="
+    echo "  $IMAGE_NAME -> $EXISTING"
+    echo "  tfvars 保持不变；要强制重建：FORCE=1 make image-es / image-rally"
+    exit 0
+  fi
+  echo "  无同名可用镜像（${IMAGE_NAME}），开始构建"
+fi
 
 echo "=== 1/6 准备构建工作区 ==="
 rm -rf "$BUILD_DIR"; mkdir -p "$BUILD_DIR"
@@ -242,6 +272,9 @@ scp -o StrictHostKeyChecking=no install.sh root@"$IP":/root/install.sh
 INSTALL_ARGS="--role $ROLE --arch $PKG_ARCH --engine $ENGINE --es-pass $ES_PASS"
 [ -n "$VERSION" ] && INSTALL_ARGS="$INSTALL_ARGS --version $VERSION"
 [ -n "$ES_PKG_URL" ] && INSTALL_ARGS="$INSTALL_ARGS --es-pkg-url $ES_PKG_URL"
+# easysearch 专属参数：channel（stable|snapshot）与 bundle 包（自带 JDK）
+[ -n "$ES_CHANNEL" ] && INSTALL_ARGS="$INSTALL_ARGS --es-channel $ES_CHANNEL"
+[ "$ES_BUNDLE" = "1" ] && INSTALL_ARGS="$INSTALL_ARGS --es-bundle"
 
 # ---------- 3/6 上传语料（可选） ----------
 # 语料必须放在 /opt 而不是 /data：运行期 userdata 会把数据盘挂到 /data，
@@ -270,7 +303,7 @@ for i in $(seq 1 36); do
   [ "$S" = "Stopped" ] && break
   sleep 5
 done
-[ "$S" = "Stopped" ] || { echo "ERROR: 实例未能停止（当前状态 $S）" >&2; exit 1; }
+[ "$S" = "Stopped" ] || { echo "ERROR: 实例未能停止（当前状态 ${S}）" >&2; exit 1; }
 echo "  实例已停止"
 
 echo "=== 5/7 打自定义镜像 ==="
@@ -297,7 +330,7 @@ for i in $(seq 1 60); do
   [ "$ST" = "Available" ] && break
   sleep 10
 done
-[ "$ST" = "Available" ] || { echo "WARN: 镜像 10 分钟内未到 Available（当前 $ST），可能仍在生成"; }
+[ "$ST" = "Available" ] || { echo "WARN: 镜像 10 分钟内未到 Available（当前 ${ST}），可能仍在生成"; }
 echo "镜像状态: $ST"
 
 echo "=== 7/7 销毁临时实例 ==="
@@ -310,7 +343,21 @@ cd - > /dev/null
   echo "${ROLE}_image_id_${ARCH} = \"$NEW_IMAGE\""
 } >> "$ROOT/image-ids.txt"
 
+# 结构化台账：TSV（日期/角色/架构/引擎/版本/镜像ID/镜像名），供 make image-ls / image-use 使用
+if [ "$ROLE" = "es" ]; then
+  ENGINE_LABEL="$ENGINE"
+  VERSION_LABEL="${VERSION:--}"
+else
+  ENGINE_LABEL="-"
+  VERSION_LABEL="-"
+  if [ -n "$CORPUS_PKG" ]; then VERSION_LABEL="corpus"; fi
+fi
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  "$(date '+%F %T')" "$ROLE" "$ARCH" "$ENGINE_LABEL" "$VERSION_LABEL" "$NEW_IMAGE" "$IMAGE_NAME" \
+  >> "$ROOT/image-ids.txt"
+
 echo
 echo "完成。把下面这行填进 terraform/terraform.tfvars："
 echo "  ${ROLE}_image_id = \"$NEW_IMAGE\""
+echo "或直接切换：make image-use --id $NEW_IMAGE"
 echo "（已追加到 image-ids.txt）"

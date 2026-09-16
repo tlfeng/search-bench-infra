@@ -20,6 +20,7 @@ ENGINE_PASS="${ENGINE_PASS:-Qwer@123}"
 TAGS=()
 EXTRA_PARAMS=""
 TEST_MODE=""      # --test-mode：极小数据集，秒级完成，只用于打通链路
+DIST_VERSION=""   # --dist-version：告知 esrally 集群的真实血统（easysearch 必传）
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -32,6 +33,7 @@ while [[ $# -gt 0 ]]; do
     --pass) ENGINE_PASS="$2"; shift 2;;
     --tag) TAGS+=("$2"); shift 2;;
     --track-params) EXTRA_PARAMS="$2"; shift 2;;
+    --dist-version) DIST_VERSION="$2"; shift 2;;
     --test-mode) TEST_MODE="--test-mode"; shift 1;;
     *) echo "unknown arg: $1" >&2; exit 1;;
   esac
@@ -120,6 +122,7 @@ fi
   --challenge="__CHALLENGE__" \
   --client-options="basic_auth_user:'__USER__',basic_auth_password:'$ADMIN_PASS',verify_certs:false" \
   __CLIENT_OPTS__ \
+  __DIST_VERSION__ \
   __TEST_MODE__ \
   --user-tags="__USER_TAGS__" \
   --report-format=markdown \
@@ -145,6 +148,13 @@ REMOTE=${REMOTE//__USER__/$ENGINE_USER}
 REMOTE=${REMOTE//__PASS__/$ENGINE_PASS}
 REMOTE=${REMOTE//__CLIENT_OPTS__/$CLIENT_OPTS}
 REMOTE=${REMOTE//__TEST_MODE__/$TEST_MODE}
+# easysearch 自报版本 2.4.0，esrally 要求集群版本 >= 6.8.0；
+# 用 --distribution-version 告知真实血统（easysearch 2.x 基于 ES 7.10.2）
+if [ -n "$DIST_VERSION" ]; then
+  REMOTE=${REMOTE//__DIST_VERSION__/--distribution-version=$DIST_VERSION}
+else
+  REMOTE=${REMOTE//__DIST_VERSION__/}
+fi
 REMOTE=${REMOTE//__USER_TAGS__/$USER_TAGS}
 
 ssh -o StrictHostKeyChecking=no root@"$RALLY_IP" "cat > /tmp/run-bench-remote.sh" <<< "$REMOTE"

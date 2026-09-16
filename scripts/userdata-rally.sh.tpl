@@ -28,17 +28,26 @@ if [ -n "$DISK" ] && mountpoint -q /mnt 2>/dev/null; then
   umount /mnt 2>/dev/null || true
 fi
 
-if [ -n "$DISK" ] && ! blkid "$DISK" >/dev/null 2>&1 && ! blkid "$${DISK}1" >/dev/null 2>&1; then
+# NVMe 分区名是 /dev/nvmeXn1p1（不是 /dev/nvmeXn11），老式盘是 /dev/vdb1。
+# 自动探测第一个分区设备名，两种命名都能正确处理。
+# 末尾 || true 是必须的：未分区时 grep 无匹配会返回 1，而
+# PART="$(first_part ...)" 是简单赋值，set -e 下会直接结束整个脚本。
+first_part() { # $1=DISK → 输出第一个分区设备路径（无分区则空）
+  lsblk -lnpo NAME,TYPE "$${1}" 2>/dev/null | grep ' part' | head -1 | cut -d' ' -f1 || true
+}
+PART="$(first_part "$DISK")"
+if [ -n "$DISK" ] && ! blkid "$DISK" >/dev/null 2>&1 && [ -z "$PART" ]; then
   parted -s "$DISK" mklabel gpt
   parted -s "$DISK" mkpart primary ext4 1MiB 100%
   sleep 2
-  mkfs.ext4 -F "$${DISK}1"
+  PART="$(first_part "$DISK")"
+  mkfs.ext4 -F "$PART"
 fi
 
 mkdir -p "$DATA_DIR"
 if [ -n "$DISK" ]; then
   DEV="$DISK"
-  [ -e "$${DISK}1" ] && DEV="$${DISK}1"
+  [ -n "$PART" ] && DEV="$PART"
   if ! mountpoint -q "$DATA_DIR"; then
     mount "$DEV" "$DATA_DIR"
     grep -q "$DATA_DIR" /etc/fstab || echo "$DEV $DATA_DIR ext4 defaults,noatime 0 0" >> /etc/fstab
@@ -61,8 +70,8 @@ if [ -d /opt/rally-corpus/benchmarks ]; then
   fi
   echo "语料就绪："
   du -sh "$DATA_DIR/benchmarks" 2>/dev/null || true
-  ls "$DATA_DIR/benchmarks/tracks/" 2>/dev/null | sed 's/^/  track: /'
-  ls "$DATA_DIR/benchmarks/data/" 2>/dev/null | sed 's/^/  data:  /'
+  ls "$DATA_DIR/benchmarks/tracks/" 2>/dev/null | sed 's/^/  track: /' || true
+  ls "$DATA_DIR/benchmarks/data/" 2>/dev/null | sed 's/^/  data:  /' || true
 else
   echo "WARN: 镜像内无 /opt/rally-corpus，esrally 将尝试联网下载语料（国内大概率失败）"
   echo "      解决办法：重建 rally 镜像并加 --with-corpus（make image-rally WITH_CORPUS=1）"

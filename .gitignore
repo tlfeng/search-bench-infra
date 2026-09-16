@@ -24,3 +24,6 @@ bin/
 corpus/geonames-data/
 corpus/geonames-corpus.tar.gz
 corpus/geonames-corpus.tar.gz.sha256
+
+# 压测产物（本地拉取的结果，不入库）
+results/

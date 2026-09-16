@@ -162,7 +162,7 @@ variable "rally_data_disk_pl" {
 }
 
 variable "es_data_disk_category" {
-  description = "ES 数据盘类型。调试时用 cloud_efficiency 省到几乎可以忽略"
+  description = "ES 数据盘类型。统一用 cloud_essd：g8i/g8y 不支持高效云盘（cloud_efficiency），传了会 InvalidDataDiskCategory"
   type        = string
   default     = "cloud_essd"
 }
@@ -255,11 +255,34 @@ variable "ram_role_name" {
   default     = ""
 }
 
-# ---------- 计费 ----------
+# ---------- 计费（按量 / 竞价） ----------
+# 竞价（抢占式）约为按量价的 2 折，代价是可能被回收（回收前 5 分钟有事件通知）。
+# 默认按量。三个变量的优先级：单侧变量 > 全局变量 > 按量。
 variable "use_spot" {
-  description = "ES 节点是否用竞价实例；正式出报告的轮次请设 false"
+  description = <<-EOT
+    全局开关：ES 节点与 rally 客户端是否都用竞价实例（false = 按量）。
+    正式出报告的轮次保持 false。
+  EOT
   type        = bool
   default     = false
+}
+
+variable "es_use_spot" {
+  description = <<-EOT
+    ES 节点是否用竞价实例；留空（null）则跟随 use_spot。
+    典型用法是「ES 按量 + rally 竞价」：ES 侧决定了整轮数据的可比性，值得用按量换稳定；
+    rally 被回收只损失一轮，重跑即可。命令行传参见 README 2.2（SPOT_ES / SPOT_RALLY）。
+  EOT
+  type        = bool
+  default     = null
+  nullable    = true
+}
+
+variable "rally_use_spot" {
+  description = "rally 客户端是否用竞价实例；留空（null）则跟随 use_spot"
+  type        = bool
+  default     = null
+  nullable    = true
 }
 
 variable "es_password" {

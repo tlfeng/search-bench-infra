@@ -47,9 +47,12 @@ cluster_name = "esbench"
 es_http_port = 9200
 
 # ---------- 存储 ----------
-es_data_disk_size = 500
-es_data_disk_pl   = "PL1"       # 350MB/s 稳定，不触发突发回落
-rally_data_disk_size = 200
+# 注意：走 make up 时这几个值会被档位默认覆盖（debug/arm-debug 两档是 40G/40G），
+# 下面的值只在直接 terraform apply 时生效。盘型统一 ESSD PL1（0.0021 元/GiB/时，
+# 系统盘与数据盘同价；g8i/g8y 不支持高效云盘），存储费用见 README 2.4。
+es_data_disk_size    = 100      # 语料 2.8G + merge 峰值 <10G，100G 足够
+es_data_disk_pl      = "PL1"    # 350MB/s 稳定，不触发突发回落
+rally_data_disk_size = 40       # 只放 rally 产物与日志
 rally_data_disk_pl   = "PL1"
 
 # ---------- 产物归档 ----------
@@ -57,8 +60,13 @@ oss_bucket = "my-esbench-results"
 oss_prefix = "esrally-results"
 ram_role_name = ""              # 建议配 RAM 角色免 AK 写 OSS
 
-# ---------- 计费 ----------
+# ---------- 计费（按量 / 竞价） ----------
+# use_spot 是全局开关，同时作用于 ES 节点与 rally 客户端；
+# 要让两侧取值不同，用下面两个单侧变量覆盖（留空 = 跟随 use_spot）。
+# 命令行也可以临时覆盖：make up USE_SPOT=1 / SPOT_ES=0 / SPOT_RALLY=1（见 README 2.2）
 use_spot          = false       # 正式出报告的轮次保持 false
+# es_use_spot     = false       # 例：ES 按量 + rally 竞价
+# rally_use_spot  = true
 assign_public_ip  = true        # false 时需经堡垒机访问
 
 # 引擎 admin 密码（镜像构建与开机健康检查共用；Makefile 会按 ENGINE 自动选，
