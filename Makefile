@@ -523,7 +523,10 @@ run:
 	   [ -n "$(strip $(SPOT_RALLY))" ] && printf '    spot_rally: $(SPOT_RALLY)\n'; \
 	   true; } > $(RUN_YAML)
 	@echo "  单栈定义 -> $(RUN_YAML)；流程 up → bench → fetch → down（KEEP=1 时保留实例）"
-	@$(SCRIPTS)/bench-matrix.sh --file $(RUN_YAML) --parallel 1 --yes \
+	# 这里必须中立化 STACK：bench-matrix 的栈身份来自上面生成的 yaml，不来自环境变量；
+	# 而它会拒绝非 default 的 STACK（防止 make matrix 误解语义）。
+	# 不清掉的话，make run STACK=x 会被自己的调用链挡在门外。
+	@env -u STACK $(SCRIPTS)/bench-matrix.sh --file $(RUN_YAML) --parallel 1 --yes \
 	  $(if $(filter 1,$(TEST_MODE)),--test-mode,) \
 	  $(if $(filter 1,$(DRY)),--dry-run,) \
 	  $(if $(filter 1,$(KEEP)),--no-down,)

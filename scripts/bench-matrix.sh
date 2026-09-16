@@ -283,6 +283,16 @@ rally_type() { # $1=rally_on(arm|x86) $2=规格档
   [ -n "$CATALOG" ] || return 1
   printf '%s' "$CATALOG" | jq -r --arg k "$1-$2" '.rally[$k].type // empty'
 }
+# 镜像 ID：档位目录里本来就带着（es_by_profile[].image / rally_by_key[].image），
+# 不用另外查。缺它就是"库存 ✅ 配额 ✅ 却在 apply 阶段失败"的最后一公里。
+cat_img() { # $1=profile
+  [ -n "$CATALOG" ] || return 1
+  printf '%s' "$CATALOG" | jq -r --arg p "$1" '.profiles[$p].image // empty'
+}
+rally_img() { # $1=rally_on $2=规格档
+  [ -n "$CATALOG" ] || return 1
+  printf '%s' "$CATALOG" | jq -r --arg k "$1-$2" '.rally[$k].image // empty'
+}
 
 # 查某机型在 region 内哪些可用区有货（1 次调用；不带 ZoneId 让服务端返回全部有货区）。
 # 必须区分"确实无货"与"查询失败"：前者可以据此让用户改 zone，
@@ -311,6 +321,22 @@ asbool() {
     0|false|no|off) echo 0 ;;
     *)              echo "" ;;
   esac
+}
+
+# 引擎名归一到 es / ez（yaml 里可能写 es/ez/elasticsearch/easysearch 任一种）
+canon_engine() {
+  case "$(printf '%s' "${1:-}" | tr 'A-Z' 'a-z')" in
+    easysearch|ez) echo ez ;;
+    elasticsearch|es) echo es ;;
+    *) echo "" ;;
+  esac
+}
+
+# 镜像 ID 属于哪个引擎：查本地台账 image-ids.txt（role/arch/engine/version/镜像ID/镜像名）。
+# 台账不入库且可能没有，查不到就返回空 —— 宁可漏判也不制造假警报。
+img_engine_of() { # $1=镜像 ID
+  [ -f "$ROOT/image-ids.txt" ] || return 0
+  awk -F'\t' -v id="$1" 'NF >= 7 && $6 == id { print $4; exit }' "$ROOT/image-ids.txt"
 }
 
 # ============================================================================
@@ -419,6 +445,62 @@ if [ "$SKIP_PREFLIGHT" = 0 ]; then
       echo
       warn "有栈的目标可用区无货。并发时开一半才失败会留下半套资源在计费，建议先改 zone。"
       warn "这是警告不是阻断：库存随时会变，也可能是我查错了。要硬跑加 --no-preflight。"
+    fi
+
+    # ---- 镜像 ID 是否配齐 ----
+    # terraform 只在 plan/apply 时才用 precondition 报"缺少镜像 ID"，预检阶段一概不查。
+    # 于是"库存 ✅ + 配额 ✅"会给人万事俱备的错觉，而缺镜像的那个栈要到 apply 才失败 ——
+    # 届时另一套可能已经起来在计费了。这里把地图和地形对上。
+    echo
+    IMG_MISS=0
+    for i in $SEL; do
+      nm="$(eff "$i" name)"; p="$(eff "$i" profile)"
+      ro="$(eff "$i" rally_on)"; [ -n "$ro" ] || ro="arm"
+      ei="$(cat_img "$p")" || ei=""
+      ri="$(rally_img "$ro" "$(cat_size "$p")")" || ri=""
+      if [ -z "$ei" ] || [ -z "$ri" ]; then
+        arch="$(printf '%s' "$CATALOG" | jq -r --arg p "$p" '.profiles[$p].arch // "?"')"
+        case "$arch" in x86_64) esv="es_image_id_x86" ;; aarch64) esv="es_image_id_arm" ;; *) esv="?" ;; esac
+        need=""
+        if [ -z "$ei" ]; then need="$esv"; fi
+        if [ -z "$ri" ]; then need="${need:+$need 与 }rally_image_id_$ro"; fi
+        printf '  %-6s %-12s ❌ 缺镜像 ID：需要在 terraform.tfvars 填 %s\n' "$nm" "$p" "$need"
+        IMG_MISS=1
+      else
+        # 镜像在，但引擎对不对？镜像 ID 实际属于哪个引擎，只有台账知道。
+        # 声明 elasticsearch 却用 easysearch 的镜像 → 密码策略与配置项全错
+        # （EZ 要求 ≥9 位，ES 的 8 位会被拒），症状是等 5 分钟健康检查超时，
+        # 而不是一句"引擎不对"，非常难归因。
+        want="$(canon_engine "$(eff "$i" engine)")"
+        got="$(canon_engine "$(img_engine_of "$ei")")"
+        if [ -n "$want" ] && [ -n "$got" ] && [ "$want" != "$got" ]; then
+          # 注意：$(case ...) 这类嵌套在 bash 里是运行时语法错误，而 bash -n 抓不到，
+          # 所以两个 case 都先算成变量再用。
+          arch="$(printf '%s' "$CATALOG" | jq -r --arg p "$p" '.profiles[$p].arch // "?"')"
+          case "$arch" in
+            x86_64)  a_short="x86" ;;
+            aarch64) a_short="arm" ;;
+            *)       a_short="?" ;;
+          esac
+          case "$got" in
+            ez) real="easysearch" ;;
+            es) real="elasticsearch" ;;
+            *)  real="?" ;;
+          esac
+          printf '  %-6s %-12s ❌ 引擎/镜像错配：声明 %s，但镜像 %s 是 %s\n' \
+            "$nm" "$p" "$(eff "$i" engine)" "$ei" "$real"
+          printf '      修法：把 engine 改成 %s，或 make image-use ENGINE=%s ARCH=%s 换镜像\n' \
+            "$real" "$want" "$a_short"
+          IMG_MISS=1
+        else
+          printf '  %-6s %-12s ✅ 镜像齐备\n' "$nm" "$p"
+        fi
+      fi
+    done
+    if [ "$IMG_MISS" = 1 ]; then
+      warn "有栈的镜像没配好（缺 ID 或与声明的引擎对不上）。terraform 要到 apply/健康检查才报错，"
+      warn "届时另一套可能已经起来在计费。先 make image-es / make image-rally 构建（按档位带 PROFILE），"
+      warn "再用 make image-use 把「镜像 ID + engine」成对写进 tfvars。"
     fi
 
     # ---- vCPU 配额 ----
@@ -582,7 +664,9 @@ run_stack() {
 
   local rc=0
   echo "================================================================"
-  echo "[$name] 开始 $(date -Is)"
+  # 用 date '+...' 而不是 date -Is：-I 是 GNU 扩展，macOS/BSD 的 date 不认，
+  # 会报 `date: invalid argument 's' for -I`（实测踩过）。
+  echo "[$name] 开始 $(date '+%Y-%m-%dT%H:%M:%S%z')"
   echo "  profile=$prof engine=$eng zone=${zone:-tfvars} vpc=${vpc:-tfvars}"
   echo "  track=$track challenge=$chal clients=${clients:-默认} codec=$codec rally_on=${rally_on:-默认}"
   echo "================================================================"
@@ -626,7 +710,7 @@ run_stack() {
   fi
 
   echo "================================================================"
-  echo "[$name] 结束 rc=$rc $(date -Is)  日志：$log"
+  echo "[$name] 结束 rc=$rc $(date '+%Y-%m-%dT%H:%M:%S%z')  日志：$log"
   return "$rc"
 }
 

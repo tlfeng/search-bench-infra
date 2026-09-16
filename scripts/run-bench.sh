@@ -10,6 +10,13 @@
 #   - 每场 race 的报告文件名必须唯一，否则 esrally 会追加而不是覆盖
 #   - 默认 detach（远端 setsid 起进程 + 本地轮询），压测跑几十分钟也不会被 ssh 断线掐死
 #
+# 关于 run-id 唯一性（并发场景下容易误判，实测过）：
+#   run-id = <track>-<challenge>-<YYYYmmdd-HHMMSS>，由**远端** rally 机按自己时钟生成。
+#   并发矩阵里多个栈的 bench 是同一秒启动的，所以**撞 run-id 是常态，不是意外**。
+#   这不是 bug：隔离靠的是 results/<stack>/ 目录与 oss_prefix=<base>/<stack>，
+#   同名 run-id 落在不同父目录下互不影响。真正会出问题的是"同一栈内同秒跑两场"，
+#   那才是要避免的。别为了"让 run-id 全局唯一"去加随机数 —— 那会破坏按时间戳回溯。
+#
 # codec 注入原理（核对 esrally 2.12.0 源码，不是猜的）：
 #   geonames 的 challenge 把 create-index 写成
 #     "settings": {{index_settings | default({}) | tojson}}
@@ -444,7 +451,45 @@ else
 fi
 REMOTE=${REMOTE//__USER_TAGS__/$USER_TAGS}
 
+# 兜底自检：任何没被替换掉的 __X__ 都意味着远端会拿到**字面占位符**。
+# 这类错的症状极难归因——远端 set -u 在用到未定义变量处退出，trap 仍把
+# collect/archive 跑完，回传 rc=4 + 耗时 0 秒 + 一堆空产物，看起来像
+# "codec 校验失败"，实际是脚本根本没开跑。宁可在这里 fail-fast。
+# （__DONE__ 是本地轮询的哨兵，不在 REMOTE 里，不受影响。）
+if printf '%s' "$REMOTE" | grep -q '__[A-Z][A-Z_]*__'; then
+  echo "ERROR: 远端脚本仍有未替换的占位符（说明有值没注入，远端会跑出空产物）：" >&2
+  printf '%s' "$REMOTE" | grep -o '__[A-Z][A-Z_]*__' | sort -u | sed 's/^/  /' >&2
+  exit 1
+fi
+
 SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=6)
+
+# 等 SSH 真正可用再上传脚本。
+# 为什么必须等：`make up` 返回时实例**刚被创建**，userdata（挂盘 / 装引擎 / 起服务）还在跑，
+# sshd 可能还没 listen。一次性流水线（make run）从 up 直接进 bench 必然撞上
+# `Connection refused` —— 而这个报错看起来像安全组/网络问题，实际只是"机器还没开机好"，
+# 排查方向完全跑偏。远程脚本里虽然有集群就绪门禁，但它要 SSH 通了才跑得到。
+SSH_WAIT_MAX=${SSH_WAIT_MAX:-600}
+ssh_t0=$(date +%s)
+ssh_i=0
+while :; do
+  if ssh "${SSH_OPTS[@]}" -o BatchMode=yes -o ConnectTimeout=5 root@"$RALLY_IP" 'true' >/dev/null 2>&1; then
+    echo "  SSH 就绪（等待 $(( $(date +%s) - ssh_t0 ))s）"
+    break
+  fi
+  ssh_el=$(( $(date +%s) - ssh_t0 ))
+  if [ "$ssh_el" -ge "$SSH_WAIT_MAX" ]; then
+    echo "ERROR: 等待 SSH 就绪超时（${SSH_WAIT_MAX}s）：root@$RALLY_IP" >&2
+    echo "  排查：安全组是否放行你的出口 IP（operator_cidr）、实例是否 Running" >&2
+    exit 1
+  fi
+  ssh_i=$((ssh_i + 1))
+  if [ $((ssh_i % 6)) -eq 1 ]; then
+    echo "  等待 SSH 就绪 ${ssh_el}s / ${SSH_WAIT_MAX}s：$RALLY_IP"
+  fi
+  sleep 10
+done
+
 ssh "${SSH_OPTS[@]}" root@"$RALLY_IP" "cat > /tmp/run-bench-remote.sh" <<< "$REMOTE"
 
 if [ "$MODE" = "foreground" ]; then
