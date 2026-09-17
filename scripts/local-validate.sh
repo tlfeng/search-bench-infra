@@ -89,10 +89,9 @@ run_role() {
 
   docker cp "$ROOT/scripts/install.sh" "$cname:/root/install.sh" >/dev/null
 
-  # 密码按引擎取：easysearch 的策略要求 >=9 位（Qwer@123 会被拒），
-  # 必须与 install.sh / Makefile 的约定一致，否则验证结果会误导人。
-  local engine_pass="Qwer@123"
-  [ "$ENGINE" = "easysearch" ] && engine_pass="Qwer@1234"
+  # 两引擎统一的 9 位口令，必须与 install.sh / Makefile 的约定一致，
+  # 否则验证结果会误导人。
+  local engine_pass="Qwer@1234"
   local args="--role $role --arch $PKG_ARCH --engine $ENGINE --es-pass $engine_pass"
   [ -n "$VERSION" ] && args="$args --version $VERSION"
 

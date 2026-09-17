@@ -289,7 +289,7 @@ make image-use --role rally --arch arm       # 切 rally 镜像
 make image-fix-names                         # 存量镜像名补版本（名字里已含版本的不动）
 ```
 
-`image-use` 把「镜像 ID + engine」**成对**修改，防止只改一边——把 easysearch 的密码配置打到 elasticsearch 镜像上的错配，要压测报 401 才暴露。
+`image-use` 把「镜像 ID + engine」**成对**修改，防止只改一边——镜像里的引擎与 `ENGINE` 变量错位后，esrally 的版本判定（`--distribution-version`）与 user-tags 会全错，到压测出数才发现。
 
 ### 2.8 多环境并存（STACK）与并发的测量纪律
 
@@ -510,7 +510,7 @@ make local-validate ROLE=es ENGINE=easysearch ES_VER=2.4.0-2969
 
 ## 4. 已知限制
 
-1. **认证账号是 `admin`，两个引擎密码不同**：elasticsearch → `Qwer@123`（用 `elasticsearch-users` 离线写入 file realm）；easysearch → `Qwer@1234`（它的密码策略硬性要求 ≥9 位，`Qwer@123` 会被拒）。两个值都由 Makefile 的 `ENGINE_PASS` 按引擎派生，镜像构建与开机健康检查同源，不会不一致——**但这是公开的默认口令，正式对外交付前务必改掉**。
+1. **认证账号是 `admin`，两个引擎密码统一为 `Qwer@1234`**：9 位是 easysearch 密码策略的下限（≥9 位），对 elasticsearch 同样合规，于是两边同源（Makefile 的 `ENGINE_PASS` 一个值，镜像构建与开机健康检查共用），不存在不一致的可能——**但这是公开的默认口令，正式对外交付前务必改掉**。注意引擎真实密码是**建镜像时烘焙**的（`elasticsearch-users` 离线写入 file realm / easysearch 的 `initialize.sh`）：改默认值后，存量 ES 镜像（内嵌旧口令）必须 `FORCE=1 make image-es PROFILE=<档>` 重建，否则开机健康检查与 rally 全部 401；easysearch 镜像本来就是 9 位，无需重建。
 2. **查询侧并发需要改 track**：geonames 的 `challenges/default.json` 里并发参数只有 `bulk_indexing_clients`（写入侧），搜索任务（`term`/`default`/`phrase`/`scroll`）没有 `clients`、走 esrally 默认 1——这正是历史 race 出现「latency == service time、零排队」的原因。要测查询吞吐上限，另存一份给搜索任务加了 `"clients": ...` 的 track 专用于爬坡，**保留原始 track 不动**才能与基线可比。
 3. **segment 数要用 `GET /_cat/segments/<索引>`**，不要用 `_all`——easysearch 的 `_all` 会计入 `.security` 索引，段数会虚高。
 4. **起跑前的环境一致性校验尚未内建**：`run-bench.sh` 目前只采集最简指纹（CPU 型号/核数/内存/governor/THP），没有绑核与背景负载检查。在同一台机器被其他业务占用时，结果可能不可比——需要更严格的隔离时，建议在起跑前手工确认 CPU 争用与 NUMA/绑核设置。

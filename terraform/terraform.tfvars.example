@@ -69,8 +69,6 @@ use_spot          = false       # 正式出报告的轮次保持 false
 # rally_use_spot  = true
 assign_public_ip  = true        # false 时需经堡垒机访问
 
-# 引擎 admin 密码（镜像构建与开机健康检查共用；Makefile 会按 ENGINE 自动选，
-# 手动 apply 时需自行与所选引擎匹配）
-#   elasticsearch  -> Qwer@123
-#   easysearch     -> Qwer@1234（其密码策略要求 >=9 位，Qwer@123 会被拒）
-es_password = "Qwer@123"
+# 引擎 admin 密码（两引擎统一；镜像构建与开机健康检查共用同一个值。
+# 9 位是 easysearch 密码策略的下限。改了它之后存量 ES 镜像要 FORCE=1 重建）
+es_password = "Qwer@1234"

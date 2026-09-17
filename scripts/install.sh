@@ -11,7 +11,7 @@ ARCH=""
 ENGINE="elasticsearch"
 VERSION=""             # es 角色：留空按引擎取默认 es=8.19.20 / easysearch=2.4.0-2963
 RALLY_VERSION="2.12.0" # rally 角色：esrally 版本（--version 可覆盖，镜像名会带上它）
-ES_PASS="Qwer@123"     # 默认 admin 密码，可用 --es-pass 覆盖（必须与 userdata 注入的 es_password 一致）
+ES_PASS="Qwer@1234"    # 默认 admin 密码（两引擎统一 9 位），可用 --es-pass 覆盖（必须与 userdata 注入的 es_password 一致）
 ES_HOME="/opt/es"
 RALLY_HOME="/opt/esrally"
 ES_PKG_URL=""      # easysearch 等内部版本用它覆盖
@@ -244,8 +244,8 @@ EOF
     # 生成 ca/instance/admin 证书、初始化 security 并写入 admin 密码。
     # 支持 -s 静默模式 + EASYSEARCH_INITIAL_ADMIN_PASSWORD 环境变量指定密码。
     #
-    # 注意：easysearch 的密码策略要求 >=9 位（须含大小写/数字/特殊字符），
-    # Qwer@123 只有 8 位会被拒 —— 这是 EZ 侧密码与 ES 侧不同的硬原因。
+    # 注意：easysearch 的密码策略要求 >=9 位（须含大小写/数字/特殊字符）。
+    # 默认口令已是 9 位；自定义 --es-pass 时注意别低于这条线。
     if [ "${#ES_PASS}" -lt 9 ]; then
       echo "ERROR: easysearch 的密码策略要求密码至少 9 位（当前 ${#ES_PASS} 位）" >&2
       echo "       须含大小写字母、数字与特殊字符。请用 --es-pass 传合规密码" >&2

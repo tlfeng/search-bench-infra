@@ -99,17 +99,14 @@ cmd_use() {
 
   echo "  ✅ $VAR = \"$ID\"  （镜像名: $(echo "$ROW" | cut -f7), 引擎: $E, 版本: ${V}）"
   if [ "$R" = "es" ]; then
-    # ES 镜像与 engine 配置必须成对切换，否则会把 easysearch 的密码配置
-    # 打到 elasticsearch 二进制上（或反过来），到压测 401 才暴露。
+    # ES 镜像与 engine 配置必须成对切换，否则镜像里的引擎与 ENGINE 变量错位
+    # —— esrally 的版本判定（--distribution-version）与 user-tags 会全错。
     if [ -n "$ENGINE_T" ] || [ "$E" != "-" ]; then
       ENGINE_N=$(norm_engine "${ENGINE_T:-$E}")
       if set_var "$TFVARS" engine "$ENGINE_N"; then
         echo "  ✅ engine = \"$ENGINE_N\""
       else
         echo "  ℹ️  tfvars 无 engine 行未写入；Makefile 的 ENGINE 变量总会覆盖它，无影响"
-      fi
-      if [ "$ENGINE_N" = "easysearch" ] && grep -qE '^es_password[[:space:]]*=[[:space:]]*"Qwer@123"' "$TFVARS"; then
-        echo "  ⚠️  easysearch 密码策略要求 >=9 位：make up 请带 ENGINE=easysearch（自动用 Qwer@1234）"
       fi
     fi
     echo "  下一步：make up PROFILE=... ENGINE=${ENGINE_N:-elasticsearch}"

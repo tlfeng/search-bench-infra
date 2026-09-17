@@ -12,7 +12,7 @@
 set -euo pipefail
 
 ROLE=""; ARCH=""; INSTANCE_TYPE=""; ES_PKG_URL=""; ENGINE="elasticsearch"; VERSION=""
-ES_PASS="Qwer@123"
+ES_PASS="Qwer@1234"    # 默认 admin 密码（两引擎统一 9 位），可用 --es-pass 覆盖
 ES_CHANNEL="stable"    # --es-channel stable|snapshot（easysearch 用）
 ES_BUNDLE=0            # --es-bundle：easysearch 用自带 JDK 的 bundle 包
 IMAGE_NAME_PREFIX="esbench"

@@ -147,12 +147,11 @@ endif
 
 # ---------- 引擎 ----------
 ENGINE ?= elasticsearch
-# 注意：easysearch 的密码策略要求 >=9 位（Qwer@123 只有 8 位会被拒），
-# 所以 EZ 与 ES 的密码不同。镜像构建（--es-pass）与开机（tfvars es_password）
-# 都用下面同一个变量，保证两边一致。
-ES_PASS ?= Qwer@123
-EZ_PASS ?= Qwer@1234
-ENGINE_PASS := $(if $(filter easysearch,$(ENGINE)),$(EZ_PASS),$(ES_PASS))
+# 两个引擎统一用同一个 9 位口令：9 位是 easysearch 密码策略的下限，
+# 对 elasticsearch 同样合规，省掉按引擎派生。镜像构建（--es-pass）与开机
+# （tfvars es_password / rally 的 /etc/es-oss.conf）共用这一个变量。
+# 注意：引擎真实密码烘焙在建镜像时，改这个值后存量 ES 镜像要 FORCE=1 重建。
+ENGINE_PASS ?= Qwer@1234
 
 # 系统盘 40G 足够（OS+引擎+语料/JDK）；ESSD 系统盘与数据盘同价，
 # 盘小自定义镜像的快照存储费也同步下降。数据一律放数据盘 /data。

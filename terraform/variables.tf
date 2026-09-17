@@ -318,17 +318,16 @@ variable "rally_use_spot" {
 
 variable "es_password" {
   description = <<-EOT
-    引擎 admin 账号密码，镜像构建（--es-pass）与开机健康检查共用同一个值。
-    注意：easysearch 的密码策略要求 >=9 位且含大小写/数字/特殊字符，
-    Qwer@123 不满足 —— engine=easysearch 时请用 Qwer@1234 之类。
-    Makefile 会按 ENGINE 自动选，手动 apply 时需自行保持一致。
+    引擎 admin 账号密码，两个引擎统一：镜像构建（--es-pass）与开机健康检查共用同一个值。
+    9 位是 easysearch 密码策略的下限（须含大小写/数字/特殊字符），对 elasticsearch 同样合规。
+    注意引擎真实密码烘焙在建镜像时：改这个值后存量 ES 镜像要 FORCE=1 make image-es 重建。
   EOT
   type        = string
-  default     = "Qwer@123"
+  default     = "Qwer@1234"
 
   validation {
-    condition     = length(var.es_password) >= 8
-    error_message = "密码至少 8 位；engine=easysearch 时须 >=9 位"
+    condition     = length(var.es_password) >= 9
+    error_message = "密码至少 9 位（easysearch 密码策略下限），且须含大小写字母、数字与特殊字符"
   }
 }
 
