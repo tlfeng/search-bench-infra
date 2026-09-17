@@ -64,7 +64,11 @@ variable "vswitch_cidr" {
 }
 
 variable "operator_cidr" {
-  description = "允许 SSH 的出口网段，务必收紧，不要 0.0.0.0/0"
+  description = <<-EOT
+    允许 SSH 的出口网段，务必收紧，不要 0.0.0.0/0。
+    Makefile 在 up/plan 时按 OPERATOR_CIDR > tfvars 值 > 自动探测出口 IP 的优先级解析；
+    留空（推荐）即自动探测，固定出口（公司网段/跳板机）才在 tfvars 显式填写。
+  EOT
   type        = string
 }
 

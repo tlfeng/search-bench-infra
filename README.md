@@ -53,11 +53,11 @@ $EDITOR terraform/terraform.tfvars  # 手工只需改 oss_bucket，其余看文�
 
 | 步骤 | 做什么 |
 |---|---|
-| 生成 tfvars | 从 example 复制出 `terraform/terraform.tfvars`，自动填 `public_key`（取 `SSH_PUBKEY` 或 `~/.ssh/*.pub`）和 `operator_cidr`（**直连**探测出口 IP——走代理会把代理 IP 写进安全组，SSH 就连不上了） |
+| 生成 tfvars | 从 example 复制出 `terraform/terraform.tfvars`，自动填 `public_key`（取 `SSH_PUBKEY` 或 `~/.ssh/*.pub`）；`operator_cidr` 保持留空——`make up` 时自动探测出口 IP 放行（**直连**探测，走代理不会误填），固定出口（公司网段/跳板机）才在 tfvars 填 |
 | 预热 provider | 把 alicloud provider 下到 `~/.terraform.d/plugins-mirror`，之后 `terraform init` 可离线；预热失败不影响，init 自动回退 registry 直连 |
 | 自检 | 逐项检查工具/凭据/公钥/tfvars/语料，失败项给出现成命令 |
 
-凭据只走内存：AK 写入 `~/.aliyun/config.json`，由 `scripts/tf-env.sh` 注入 terraform，不落仓库、不写 tfvars，日志只回显 AK 前 6 位；`terraform.tfvars`（含公钥与出口 IP）与 `*.csv` 都被 `.gitignore` 挡住。AK 若泄露，去 RAM 控制台禁用/轮换该 AccessKey 止损。
+凭据只走内存：AK 写入 `~/.aliyun/config.json`，由 `scripts/tf-env.sh` 注入 terraform，不落仓库、不写 tfvars，日志只回显 AK 前 6 位；`terraform.tfvars`（含 SSH 公钥；`operator_cidr` 默认留空走自动探测）与 `*.csv` 都被 `.gitignore` 挡住。AK 若泄露，去 RAM 控制台禁用/轮换该 AccessKey 止损。
 
 ### 1.4 准备语料（本机执行，0 云费用）
 
@@ -389,6 +389,7 @@ make matrix EXTRA_ARGS="--no-down"              # 保留实例，便于登进去
 │   ├── fetch-results.sh    拉取产物
 │   ├── stacks.sh           列出全部环境（本地 + 云端在计费的实例）
 │   ├── local-validate.sh   本地 Docker 验证 install.sh（make local-validate）
+│   ├── operator-cidr.sh    探测本机出口 IP（up/plan 自动放行 SSH；bootstrap 共用）
 │   ├── bench-matrix.sh     并行跑多套（up→bench→fetch→down）+ 库存预检；make run 复用它的单栈流水线
 │   └── matrix-summary.sh   把各栈报告汇总成对照表
 ├── .stacks/                每 stack 的 provider 缓存、workspace 指针与 up 环境记录 meta（不入库）
@@ -505,6 +506,7 @@ make local-validate ROLE=es ENGINE=easysearch ES_VER=2.4.0-2969
 | `tf-env.sh` 的提示语一律走 stderr | 调用方常写 `$(tf.sh output -raw ...)`，混进 stdout 的提示语会把返回值污染成一句中文（`fetch-results.sh` 真的踩过） |
 | up 时把 PROFILE/ENGINE 落盘 `.stacks/<stack>/meta`，bench/status/run 缺省回读 | 没传参时的默认值应该来自「这套环境自己」，而不是 Makefile 全局默认——否则 up 用 arm-debug、bench 按默认档推导，arch 错标 + 就绪门禁退化成 1 节点，错得悄无声息。显式传参永远优先；`image-*` 等构建类目标不回读，防止镜像架构被上次 up 带偏 |
 | 引擎版本 pin 死，不自动拉最新 | 版本是被测对象的一部分，静默升级会让两轮结果不可比；elastic 没有 latest 端点，解析页面只会给脆弱的国内链路再加一层不确定。升级 = 改 `ES_VER` 一处 → 建新镜像（名字含版本，新旧并存）→ `image-use` 切换 |
+| `operator_cidr` 在 up/plan 时解析：显式 > tfvars > 自动探测 | 手填的出口 IP 在宽带重拨后必然过期，而 SG 规则支持原地更新——过期这件事可以自动化掉。tfvars 留空（新装默认）即自动探测，固定出口场景仍可用 tfvars 覆盖，两种场景不打架 |
 | 所有脚本里 `$VAR` 紧跟中文/全角字符一律写成 `${VAR}` | macOS 自带 bash 3.2 会把多字节字节并进变量名：`$PAR）` 查的是名为 `PAR）` 的变量，`set -u` 下直接 `unbound variable` 崩溃（无 `set -u` 时静默输出空值），Linux bash 5 无此问题——这类雷只在 macOS 上炸 |
 
 ---
@@ -526,7 +528,7 @@ make local-validate ROLE=es ENGINE=easysearch ES_VER=2.4.0-2969
 | 现象 | 大概率原因 | 怎么查 |
 |---|---|---|
 | `terraform apply` 报缺镜像 ID | 镜像没建或架构填错 | 报错会点名该填哪个字段、先跑哪条命令 |
-| SSH 连不上新实例 | `operator_cidr` 没放行你的出口 IP | 查安全组规则；`curl -4 ifconfig.me` 取真实 IP，IP 变了改 tfvars 重新 apply |
+| SSH 连不上新实例 | 安全组没放行你的出口 IP | tfvars 留空（默认）时重新 `make up` 即自动探测刷新；固定出口场景改 tfvars 的 `operator_cidr` 或 `make up OPERATOR_CIDR=1.2.3.0/24` 后重新 apply |
 | 实例起来了但 ES 没起 | userdata 失败 | `make ssh-es1 'cat /var/log/es-init.log'` |
 | 集群只有一个节点 | seed_hosts / 固定 IP 未生效 | `curl localhost:9200/_cat/nodes?v`；核对 vSwitch 网段 `.10` 是否被占用 |
 | rally 连不上 ES | 安全组或凭证不对 | `make ssh-rally 'cat /etc/es-targets.conf'`；rally 机上 curl 一下 9200 |

@@ -49,15 +49,10 @@ replace_kv() {
   fi
 }
 
-# 直连探测本机出口 IP。必须 --noproxy：若走代理，拿到的是代理出口 IP，
-# 写进安全组会导致 SSH 放行了错误地址。
+# 直连探测本机出口 IP，实现统一收在 scripts/operator-cidr.sh
+# （Makefile 的 up/plan 解析 operator_cidr 用的是同一份，两边口径才不会分叉）。
 detect_egress_ip() {
-  local ip url
-  for url in https://ip.3322.net https://ifconfig.me/ip https://api.ipify.org; do
-    ip=$(curl -4 -s --noproxy '*' -m 5 "$url" 2>/dev/null | tr -d '[:space:]') || continue
-    case "$ip" in *[0-9].[0-9]*.[0-9]*.[0-9]*) echo "$ip"; return 0 ;; esac
-  done
-  return 1
+  "$HERE/operator-cidr.sh"
 }
 
 cmd_vars() {
@@ -87,15 +82,14 @@ cmd_vars() {
     warn "未找到 SSH 公钥：先 ssh-keygen -t ed25519 再重跑 make setup"
   fi
 
+  # operator_cidr 保持留空 = 自动模式：make up/plan 时每次探测当前出口并放行，
+  # 宽带重拨/换网后重新 make up 即可，不会写死一个会过期的 IP。
   local ip; ip=$(detect_egress_ip || true)
   if [ -n "$ip" ]; then
-    if replace_kv "$TFVARS" operator_cidr "\"$ip/32\""; then
-      echo "  ✅ operator_cidr 已填为本机出口 IP：$ip/32（换网络后 IP 变了就改这里并重新 apply）"
-    else
-      warn "tfvars 里没有 operator_cidr 行，未填"
-    fi
+    echo "  ℹ️  出口 IP 探测：$ip —— tfvars 的 operator_cidr 保持留空即可，make up 会自动放行当前出口"
+    echo "      固定出口场景（公司网段/跳板机）才在 tfvars 填 operator_cidr（如 \"$ip/32\" 或整段 /24）"
   else
-    warn "探测出口 IP 失败，请手工填 operator_cidr（curl -4 ifconfig.me 查看后填入）"
+    warn "探测出口 IP 失败（不影响 setup）；make up 时会再探测，届时仍失败需 tfvars 填 operator_cidr 或 OPERATOR_CIDR=… 覆盖"
   fi
 
   echo "  ✍️  需手工确认：oss_bucket（产物归档桶）等；镜像 ID 在 make image-* 构建后回填"

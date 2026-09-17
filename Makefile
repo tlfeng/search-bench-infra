@@ -224,6 +224,32 @@ ifneq ($(strip $(STACK)),default)
 TF_VARS += -var="oss_prefix=$(OSS_PREFIX_BASE)/$(STACK)"
 endif
 
+# ---------- SSH 放行网段（operator_cidr）：默认自动探测，无需手填 ----------
+# 解析优先级：OPERATOR_CIDR（命令行/环境，可给网段）> tfvars 值（固定出口场景）> 自动探测出口 IP（/32）。
+# tfvars 留空（新装默认）时，每次 up/plan 探测当前出口并放行 —— 宽带重拨/换网后重新
+# make up 即可刷新安全组（sg 规则原地更新，不重建实例），不会写死一个会过期的 IP。
+# 只对 up/plan 解析：探测是网络请求，help/image 等目标不触发；run/matrix 经嵌套 make up 各自探测。
+# 探测脚本 scripts/operator-cidr.sh 强制直连（--noproxy）：走代理拿到的是代理出口，会放行错误地址。
+OPERATOR_CIDR ?=
+ifneq ($(filter up plan,$(if $(MAKECMDGOALS),$(MAKECMDGOALS),help)),)
+TFVARS_CIDR := $(strip $(shell sed -nE 's/^operator_cidr[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' $(TFDIR)/terraform.tfvars 2>/dev/null | head -1))
+ifeq ($(strip $(TFVARS_CIDR)),)
+DETECTED_IP := $(strip $(shell $(SCRIPTS)/operator-cidr.sh 2>/dev/null))
+endif
+ifneq ($(strip $(OPERATOR_CIDR)),)
+TF_VARS += -var="operator_cidr=$(OPERATOR_CIDR)"
+CIDR_NOTE := SSH 放行（显式指定）：$(OPERATOR_CIDR)
+else ifneq ($(strip $(TFVARS_CIDR)),)
+TF_VARS += -var="operator_cidr=$(TFVARS_CIDR)"
+CIDR_NOTE := SSH 放行（tfvars 固定值）：$(TFVARS_CIDR)
+else ifneq ($(strip $(DETECTED_IP)),)
+TF_VARS += -var="operator_cidr=$(DETECTED_IP)/32"
+CIDR_NOTE := SSH 放行（自动探测出口 IP）：$(DETECTED_IP)/32
+else
+CIDR_NOTE := ⚠️  探测出口 IP 失败且 tfvars 无 operator_cidr —— apply 会因缺参失败；设 OPERATOR_CIDR=… 或在 tfvars 填 operator_cidr
+endif
+endif
+
 # 版本：ES 与 easysearch 各自的默认值。升级 = 改这里（或命令行 ES_VER=… 覆盖）
 # -> 建新镜像（镜像名含版本，天然与旧版并存）-> make image-use 切换指向。
 # 刻意不做「自动拉最新」：版本是被测对象的一部分，静默升级会让两轮结果不可比。
@@ -332,6 +358,9 @@ fmt:
 	cd $(TFDIR) && $(TERRAFORM) fmt -recursive
 
 plan: init
+ifneq ($(strip $(CIDR_NOTE)),)
+	@echo "  $(CIDR_NOTE)"
+endif
 	@$(TF) plan $(TF_VARS) $(SPOT_ARGS)
 
 # 用变量拼接而不是 $(if) 内联：后者在参数为空时会留下悬空的续行符，脆弱且难读
@@ -450,6 +479,9 @@ image-fix-names:
 up: init
 ifneq ($(strip $(META_APPLIED)),)
 	@echo "  [meta] $(META_APPLIED) 缺省值取自 up 记录：PROFILE=$(PROFILE) ENGINE=$(ENGINE)"
+endif
+ifneq ($(strip $(CIDR_NOTE)),)
+	@echo "  $(CIDR_NOTE)"
 endif
 	@$(TF) apply -auto-approve $(TF_VARS) $(SPOT_ARGS)
 	@mkdir -p $(ROOT)/.stacks/$(STACK)

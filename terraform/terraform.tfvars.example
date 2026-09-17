@@ -1,5 +1,5 @@
 # 复制为 terraform.tfvars 后填写；或直接 `make setup` 自动生成——
-# public_key / operator_cidr 会自动填，本文件里只需再确认 oss_bucket
+# public_key 会自动填，operator_cidr 默认留空（make up 自动探测），本文件里只需再确认 oss_bucket
 
 region  = "cn-hangzhou"
 zone_id = "cn-hangzhou-i"
@@ -8,8 +8,10 @@ project = "esbench"
 env     = "perf"
 owner   = "perf-team"
 
-# SSH 放行网段，务必收紧为你的真实出口 IP
-operator_cidr = "203.0.113.10/32"
+# SSH 放行网段：**默认留空** —— 每次 make up / plan 自动探测本机出口 IP 并放行（/32），
+# 宽带重拨/换网后重新 make up 即可刷新，无需手填。只有固定出口场景（公司网段/跳板机）
+# 才取消注释填 CIDR；临时场景也可 make up OPERATOR_CIDR=1.2.3.0/24 覆盖。务必收紧，不要 0.0.0.0/0。
+# operator_cidr = "203.0.113.10/32"
 
 # SSH 公钥内容（推荐）；留空则改用 instance_password
 public_key = "ssh-rsa AAAA..."
