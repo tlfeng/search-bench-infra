@@ -2,14 +2,14 @@
 # 镜像构建阶段执行：安装引擎与 esrally。构建完打镜像，之后每次开机直接用镜像。
 #
 # 用法：
-#   ./install.sh --role es    --arch x86_64  [--engine elasticsearch] [--version 8.19.20]
+#   ./install.sh --role es    --arch x86_64  [--engine elasticsearch] [--version 8.19.21]
 #   ./install.sh --role rally --arch x86_64  [--version 2.12.0]
 set -euo pipefail
 
 ROLE=""
 ARCH=""
 ENGINE="elasticsearch"
-VERSION=""             # es 角色：留空按引擎取默认 es=8.19.20 / easysearch=2.4.0-2963
+# 留空按引擎取兜底默认（须与 Makefile 的 ES_VER/EZ_VER 保持一致；正常都由 --version 显式传入）
 RALLY_VERSION="2.12.0" # rally 角色：esrally 版本（--version 可覆盖，镜像名会带上它）
 ES_PASS="Qwer@1234"    # 默认 admin 密码（两引擎统一 9 位），可用 --es-pass 覆盖（必须与 userdata 注入的 es_password 一致）
 ES_HOME="/opt/es"
@@ -48,8 +48,8 @@ fi
 # 版本留空时按引擎取默认（easysearch 的版本串带 build 号，与 ES 不同）
 if [ -z "$VERSION" ]; then
   case "$ENGINE" in
-    easysearch) VERSION="2.4.0-2963" ;;
-    *)          VERSION="8.19.20" ;;
+    easysearch) VERSION="2.4.0-2969" ;;
+    *)          VERSION="8.19.21" ;;
   esac
 fi
 

@@ -13,7 +13,7 @@
 # 用法：
 #   ./scripts/local-validate.sh --role rally --with-corpus
 #   ./scripts/local-validate.sh --role es --engine elasticsearch
-#   ./scripts/local-validate.sh --role es --engine easysearch --version 2.4.0-2963
+#   ./scripts/local-validate.sh --role es --engine easysearch --version 2.4.0-2969
 #   ./scripts/local-validate.sh --role all
 #   ./scripts/local-validate.sh --role rally --keep      # 失败时保留容器，便于登进去查
 set -uo pipefail

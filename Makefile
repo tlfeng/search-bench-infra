@@ -224,8 +224,10 @@ ifneq ($(strip $(STACK)),default)
 TF_VARS += -var="oss_prefix=$(OSS_PREFIX_BASE)/$(STACK)"
 endif
 
-# 版本：ES 与 easysearch 各自的默认值
-ES_VER ?= 8.19.20
+# 版本：ES 与 easysearch 各自的默认值。升级 = 改这里（或命令行 ES_VER=… 覆盖）
+# -> 建新镜像（镜像名含版本，天然与旧版并存）-> make image-use 切换指向。
+# 刻意不做「自动拉最新」：版本是被测对象的一部分，静默升级会让两轮结果不可比。
+ES_VER ?= 8.19.21
 # easysearch 用 snapshot/bundle 的 2.4.0-2969：发布包本体不含 JDK，
 # bundle 自带 JDK，省去 initialize.sh 现拉 ~200MB（慢且依赖外网）。
 EZ_VER ?= 2.4.0-2969
@@ -233,8 +235,6 @@ ENGINE_VER := $(if $(filter easysearch,$(ENGINE)),$(EZ_VER),$(ES_VER))
 # bundle 包只在 snapshot/bundle/ 路径下
 EZ_CHANNEL ?= snapshot
 EZ_BUNDLE  ?= 1
-EZ_VER ?= 2.4.0-2969
-ES_VER ?=                     # 留空按引擎取默认：es=8.19.20 / easysearch=2.4.0-2963
 # esrally 版本：编入 rally 镜像名（esbench-rally-<RALLY_VER>-<arch>），并传给 install.sh
 RALLY_VER ?= 2.12.0
 BASE_IMG ?=                   # 基础镜像正则，留空用默认 ^aliyun_4_(x64|arm64)_20G_alibase_[0-9]{8}[.]vhd$；需要 Rocky 时传 '^rockylinux_9'
@@ -271,6 +271,9 @@ help:
 	@echo "  make image-rally PROFILE=arm-cheap WITH_CORPUS=1  rally 镜像（语料必须带）"
 	@echo "     注意：不带 PROFILE 时默认 debug 档 -> rally 走 x86；四轮对照用的是 ARM，务必带 PROFILE=arm-*"
 	@echo "  make image-es  PROFILE=arm-debug"
+	@echo "     版本都是参数：ES_VER=8.19.21（默认）/ EZ_VER=2.4.0-2969 / RALLY_VER=2.12.0。"
+	@echo "     升级 = 传新值建新镜像（名字含版本，与旧版并存）-> make image-use 切换指向；"
+	@echo "     刻意不做自动拉最新——版本是被测对象的一部分，静默升级会让两轮结果不可比。"
 	@echo
 	@echo "常用："
 	@echo "  make up                       按档位创建 ECS（ES + rally）"

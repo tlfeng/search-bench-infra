@@ -504,6 +504,7 @@ make local-validate ROLE=es ENGINE=easysearch ES_VER=2.4.0-2969
 | 库存预检只警告、且"查询失败"报"未知"而非"无货" | 预检的目的是提前说出"云上开不出来"，不是替人决定能不能跑；把查询失败当成无货会制造假警报，假警报比不报更糟 |
 | `tf-env.sh` 的提示语一律走 stderr | 调用方常写 `$(tf.sh output -raw ...)`，混进 stdout 的提示语会把返回值污染成一句中文（`fetch-results.sh` 真的踩过） |
 | up 时把 PROFILE/ENGINE 落盘 `.stacks/<stack>/meta`，bench/status/run 缺省回读 | 没传参时的默认值应该来自「这套环境自己」，而不是 Makefile 全局默认——否则 up 用 arm-debug、bench 按默认档推导，arch 错标 + 就绪门禁退化成 1 节点，错得悄无声息。显式传参永远优先；`image-*` 等构建类目标不回读，防止镜像架构被上次 up 带偏 |
+| 引擎版本 pin 死，不自动拉最新 | 版本是被测对象的一部分，静默升级会让两轮结果不可比；elastic 没有 latest 端点，解析页面只会给脆弱的国内链路再加一层不确定。升级 = 改 `ES_VER` 一处 → 建新镜像（名字含版本，新旧并存）→ `image-use` 切换 |
 | 所有脚本里 `$VAR` 紧跟中文/全角字符一律写成 `${VAR}` | macOS 自带 bash 3.2 会把多字节字节并进变量名：`$PAR）` 查的是名为 `PAR）` 的变量，`set -u` 下直接 `unbound variable` 崩溃（无 `set -u` 时静默输出空值），Linux bash 5 无此问题——这类雷只在 macOS 上炸 |
 
 ---
